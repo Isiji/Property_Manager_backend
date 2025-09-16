@@ -25,7 +25,7 @@ def create_landlord(payload: LandlordCreate, db: Session = Depends(get_db)):
     if exists:
         raise HTTPException(status_code=400, detail="Landlord with email or phone already exists")
 
-    obj = models.Landlord(**payload.dict())
+    obj = models.Landlord(**payload.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)

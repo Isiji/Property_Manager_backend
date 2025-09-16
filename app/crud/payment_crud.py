@@ -5,7 +5,7 @@ from .. import models, schemas
 from typing import List
 
 def create_payment(db: Session, payload: schemas.PaymentCreate):
-    p = models.Payment(**payload.dict())
+    p = models.Payment(**payload.model_dump())
     db.add(p)
     db.commit()
     db.refresh(p)

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def create_property(db: Session, payload: schemas.PropertyCreate):
     try:
-        prop = models.Property(**payload.dict())
+        prop = models.Property(**payload.model_dump())
         db.add(prop)
         db.commit()
         db.refresh(prop)

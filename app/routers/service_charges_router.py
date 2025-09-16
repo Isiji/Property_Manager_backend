@@ -14,7 +14,7 @@ router = APIRouter(prefix="/service-charges", tags=["Service Charges"])
 # Create a service charge
 @router.post("/", response_model=schemas.ServiceChargeOut)
 def create_service_charge(payload: schemas.ServiceChargeCreate, db: Session = Depends(get_db)):
-    sc = models.ServiceCharge(**payload.dict())
+    sc = models.ServiceCharge(**payload.model_dump())
     db.add(sc)
     db.commit()
     db.refresh(sc)

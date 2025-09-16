@@ -18,7 +18,7 @@ def create_status(payload: schemas.MaintenanceStatusCreate, db: Session = Depend
     existing = db.query(models.MaintenanceStatus).filter(models.MaintenanceStatus.name == payload.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="Status already exists")
-    status = models.MaintenanceStatus(**payload.dict())
+    status = models.MaintenanceStatus(**payload.model_dump())
     db.add(status)
     db.commit()
     db.refresh(status)
@@ -57,7 +57,7 @@ def create_request(payload: schemas.MaintenanceRequestCreate, db: Session = Depe
     status = db.query(models.MaintenanceStatus).filter(models.MaintenanceStatus.id == payload.status_id).first()
     if not status:
         raise HTTPException(status_code=400, detail="Invalid status_id")
-    mr = models.MaintenanceRequest(**payload.dict())
+    mr = models.MaintenanceRequest(**payload.model_dump())
     db.add(mr)
     db.commit()
     db.refresh(mr)

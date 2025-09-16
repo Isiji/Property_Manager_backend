@@ -12,7 +12,7 @@ router = APIRouter(prefix="/maintenance", tags=["Maintenance Requests"])
 # Create a maintenance request
 @router.post("/", response_model=schemas.MaintenanceRequestOut)
 def create_request(payload: schemas.MaintenanceRequestCreate, db: Session = Depends(get_db)):
-    mr = models.MaintenanceRequest(**payload.dict())
+    mr = models.MaintenanceRequest(**payload.model_dump())
     db.add(mr)
     db.commit()
     db.refresh(mr)

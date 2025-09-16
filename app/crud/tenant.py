@@ -12,7 +12,7 @@ def create_tenant(db: Session, payload: TenantCreate):
     if exists:
         raise HTTPException(status_code=400, detail="Tenant with email or phone already exists")
 
-    tenant = models.Tenant(**payload.dict())
+    tenant = models.Tenant(**payload.model_dump())
     db.add(tenant)
     db.commit()
     db.refresh(tenant)
