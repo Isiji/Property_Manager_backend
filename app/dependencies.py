@@ -1,0 +1,10 @@
+# app/dependencies.py
+from .database import SessionLocal
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

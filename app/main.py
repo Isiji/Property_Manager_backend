@@ -1,53 +1,22 @@
 # app/main.py
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-from . import models
-from .database import engine, SessionLocal, Base
-from pydantic import BaseModel
-from typing import List
+from fastapi import FastAPI
+from app.database import Base, engine
+from app.routers import bulk_upload, landlord_routers, tenant_routers, property_router, unit_router, lease_router, payment_router, maintenance_router, service_charges_router
 
-# create tables (first-time run)
+# create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Property Management API")
 
-# DB dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# register routers
+app.include_router(landlord_routers.router)
+app.include_router(tenant_routers.router)
+app.include_router(property_router.router)
+app.include_router(unit_router.router)
+app.include_router(bulk_upload.router)
+app.include_router(lease_router.router)
+app.include_router(payment_router.router)
+app.include_router(maintenance_router.router)
+app.include_router(service_charges_router.router)
 
-# Schemas
-class TenantCreate(BaseModel):
-    name: str
-    email: str
-    phone: str
 
-class TenantOut(BaseModel):
-    id: int
-    name: str
-    email: str
-    phone: str
-    class Config:
-        orm_mode = True
-
-# Simple tenant endpoints
-@app.post("/tenants/", response_model=TenantOut)
-def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
-    # check duplicates
-    exists = db.query(models.Tenant).filter(
-        (models.Tenant.email == payload.email) | (models.Tenant.phone == payload.phone)
-    ).first()
-    if exists:
-        raise HTTPException(status_code=400, detail="Tenant with email or phone already exists")
-    t = models.Tenant(name=payload.name, email=payload.email, phone=payload.phone)
-    db.add(t)
-    db.commit()
-    db.refresh(t)
-    return t
-
-@app.get("/tenants/", response_model=List[TenantOut])
-def list_tenants(db: Session = Depends(get_db)):
-    return db.query(models.Tenant).all()
