@@ -1,5 +1,5 @@
 # app/schemas/service_charges.py
-from pydantic import BaseModel, condecimal, Field
+from pydantic import BaseModel, condecimal, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 from decimal import Decimal
@@ -22,4 +22,4 @@ class ServiceChargeOut(ServiceChargeBase):
     date: datetime
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)

@@ -1,5 +1,5 @@
 # app/schemas/unit.py
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from decimal import Decimal
 
@@ -21,4 +21,4 @@ class UnitOut(BaseModel):
     property_id: int
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)

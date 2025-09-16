@@ -11,7 +11,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not set in .env")
 
 # create engine (SQLAlchemy)
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+engine = create_engine(DATABASE_URL, echo=True, future=True)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

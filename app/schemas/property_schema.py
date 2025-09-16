@@ -4,7 +4,7 @@ from typing import List, Optional
 class PropertyBase(BaseModel):
     name: str
     address: str
-    landlord_id: int
+    landlord_id: Optional[int] = None
     manager_id: Optional[int] = None
 
 class PropertyCreate(PropertyBase):
@@ -18,4 +18,4 @@ class PropertyUpdate(BaseModel):
 class PropertyOut(PropertyBase):
     id: int
     class Config:
-        orm_mode = True
+        from_attributes = True

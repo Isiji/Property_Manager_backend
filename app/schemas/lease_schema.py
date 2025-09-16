@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 from decimal import Decimal
@@ -13,7 +13,7 @@ class TenantOut(BaseModel):
     phone: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)
 
 
 class UnitOut(BaseModel):
@@ -22,7 +22,7 @@ class UnitOut(BaseModel):
     rent_amount: Decimal
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)
 
 
 # =========================
@@ -53,4 +53,4 @@ class LeaseOut(LeaseBase):
     unit: Optional[UnitOut] = None
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)

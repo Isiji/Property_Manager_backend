@@ -1,6 +1,11 @@
 # app/crud/unit.py
 from sqlalchemy.orm import Session
 from app import models, schemas
+from typing import List, Optional
+from sqlalchemy import or_
+from sqlalchemy.exc import NoResultFound
+from app.schemas.tenant_schema import TenantOut
+from app.crud import tenant as tenant_crud
 
 def create_unit(db: Session, unit: schemas.UnitCreate):
     new_unit = models.Unit(

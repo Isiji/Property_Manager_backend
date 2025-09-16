@@ -1,13 +1,22 @@
 from sqlalchemy.orm import Session
 from app import models, schemas
+from fastapi import HTTPException
+import logging
 
+logger = logging.getLogger(__name__)
 # Create
+
 def create_property(db: Session, payload: schemas.PropertyCreate):
-    prop = models.Property(**payload.dict())
-    db.add(prop)
-    db.commit()
-    db.refresh(prop)
-    return prop
+    try:
+        prop = models.Property(**payload.dict())
+        db.add(prop)
+        db.commit()
+        db.refresh(prop)
+        return prop
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating property: {e}", exc_info=True)  # <--- detailed traceback
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Get all
 def get_properties(db: Session):

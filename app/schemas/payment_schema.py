@@ -1,5 +1,5 @@
 # app/schemas/payments.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 from decimal import Decimal
@@ -27,4 +27,4 @@ class PaymentOut(PaymentBase):
     date: datetime
 
     class Config:
-        from_attributes = True  # replaces orm_mode=True in Pydantic v2
+        model_config = ConfigDict(from_attributes=True)
