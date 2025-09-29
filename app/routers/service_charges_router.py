@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from .. import models
-from ..schemas import services_charges_schema as schemas
+from ..schemas import service_charge_schema as schemas
 from ..dependencies import get_db
 
 router = APIRouter(prefix="/service-charges", tags=["Service Charges"])

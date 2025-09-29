@@ -9,8 +9,27 @@ def create_payment(db: Session, payload: schemas.PaymentCreate):
     db.add(p)
     db.commit()
     db.refresh(p)
-    return p
 
+    # Auto-create lease if not exists
+    active_lease = db.query(models.Lease).filter(
+        models.Lease.unit_id == payload.unit_id,
+        models.Lease.tenant_id == payload.tenant_id,
+        models.Lease.active == 1
+    ).first()
+
+    if not active_lease:
+        unit = db.query(models.Unit).filter(models.Unit.id == payload.unit_id).first()
+        lease = models.Lease(
+            tenant_id=payload.tenant_id,
+            unit_id=payload.unit_id,
+            rent_amount=unit.rent_amount,
+            active=1
+        )
+        db.add(lease)
+        db.commit()
+        db.refresh(lease)
+
+    return p
 def get_payment(db: Session, payment_id: int):
     return db.query(models.Payment).filter(models.Payment.id == payment_id).first()
 

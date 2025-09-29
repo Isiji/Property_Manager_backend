@@ -50,14 +50,13 @@ def list_units_by_property(property_id: int, db: Session = Depends(get_db)):
     return units
 
 # app/routers/unit.py
-@router.get("/available/", response_model=List[schemas.UnitOut])
-def list_available_units(property_id: int = None, db: Session = Depends(get_db)):
-    return unit_crud.get_available_units(db, property_id)
+@router.get("/available", response_model=List[schemas.UnitOut])
+def list_available_units(db: Session = Depends(get_db)):
+    return unit_crud.get_available_units(db)
 
-@router.get("/occupied/", response_model=List[schemas.UnitOut])
-def list_occupied_units(property_id: int = None, db: Session = Depends(get_db)):
-    return unit_crud.get_occupied_units(db, property_id)
-
+@router.get("/occupied", response_model=List[schemas.UnitOut])
+def list_occupied_units(db: Session = Depends(get_db)):
+    return unit_crud.get_occupied_units(db)
 # app/routers/unit.py
 @router.get("/search/", response_model=List[schemas.UnitOut])
 def search_units(query: str, db: Session = Depends(get_db)):
@@ -70,3 +69,10 @@ def get_unit_tenant(unit_id: int, db: Session = Depends(get_db)):
     if not tenant:
         raise HTTPException(status_code=404, detail="No active tenant in this unit")
     return tenant
+
+@router.get("/{unit_id}", response_model=schemas.UnitOut)
+def read_unit(unit_id: int, db: Session = Depends(get_db)):
+    unit = crud.unit.get_unit(db, unit_id=unit_id)
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return unit

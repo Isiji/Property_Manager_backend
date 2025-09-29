@@ -1,4 +1,5 @@
-from .user_models import Landlord, PropertyManager, Tenant
-from .property_models import Property, Unit, Lease
-from .payment_models import Payment, ServiceCharge
-from .maintenance_models import MaintenanceRequest, MaintenanceStatus
+from .user_models import *
+from .property_models import *
+from .payment_model import *
+from .maintenance_models import *
+from .notification_model import *

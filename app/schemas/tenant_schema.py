@@ -17,6 +17,7 @@ class TenantUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
+    unit_id: Optional[int] = None  # allow updating assigned unit
 
 # Response model
 class TenantOut(TenantBase):
@@ -24,3 +25,10 @@ class TenantOut(TenantBase):
 
     class Config:
         model_config = ConfigDict(from_attributes=True)
+
+class TenantSelfRegister(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    property_id: int          # property code
+    unit_number: str 

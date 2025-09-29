@@ -1,7 +1,7 @@
 # app/schemas/service_charges.py
 from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Annotated
 from decimal import Decimal
 
 

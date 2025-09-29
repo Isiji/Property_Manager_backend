@@ -22,9 +22,13 @@ class PaymentUpdate(BaseModel):
     description: Optional[str] = None
 
 
-class PaymentOut(PaymentBase):
+class PaymentOut(BaseModel):
     id: int
+    amount: Decimal
     date: datetime
+    description: Optional[str] = None
+    unit_id: int
+    lease_id: Optional[int] = None
 
     class Config:
         model_config = ConfigDict(from_attributes=True)

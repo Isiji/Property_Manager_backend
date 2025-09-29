@@ -13,10 +13,19 @@ class Property(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)             # Name of the property
     address = Column(String, nullable=False)
-    landlord_id = Column(Integer, ForeignKey("landlords.id"), nullable=False)
     manager_id = Column(Integer, ForeignKey("property_managers.id"), nullable=True)
+    landlord_id = Column(
+    Integer,
+    ForeignKey("landlords.id", ondelete="CASCADE"),  # ✅ DB-level cascade
+    nullable=False
+)
 
-    landlord = relationship("Landlord", back_populates="properties")
+    landlord = relationship(
+        "Landlord",
+        back_populates="properties"
+    )
+
+
     manager = relationship("PropertyManager", back_populates="properties")
     units = relationship("Unit", back_populates="property", cascade="all, delete-orphan")
 
@@ -24,9 +33,10 @@ class Property(Base):
 class Unit(Base):
     __tablename__ = "units"
     id = Column(Integer, primary_key=True, index=True)
-    number = Column(String, nullable=False)           # Unit number (house/unit)
+    number = Column(String, nullable=False)
     rent_amount = Column(Numeric(10, 2), nullable=False)
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=False)
+    occupied = Column(Integer, default=0)  # 0 = vacant, 1 = occupied
 
     property = relationship("Property", back_populates="units")
     lease = relationship("Lease", back_populates="unit", uselist=False)

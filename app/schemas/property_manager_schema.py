@@ -1,24 +1,23 @@
-# app/schemas/landlord_schema.py
 from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional, List
-from app.schemas.property_schema import PropertyOut  # <-- assuming you already have this
+from app.schemas.property_schema import PropertyOut  # so we can show properties
 
-class LandlordBase(BaseModel):
+class PropertyManagerBase(BaseModel):
     name: str
     phone: str
     email: Optional[EmailStr] = None
 
-class LandlordCreate(LandlordBase):
+class PropertyManagerCreate(PropertyManagerBase):
     pass
 
-class LandlordUpdate(BaseModel):
+class PropertyManagerUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
 
-class LandlordOut(LandlordBase):
+class PropertyManagerOut(PropertyManagerBase):
     id: int
-    properties: List[PropertyOut] = []  # ✅ landlord profile shows all properties
+    properties: List[PropertyOut] = []   # include all managed properties
 
     class Config:
         model_config = ConfigDict(from_attributes=True)
