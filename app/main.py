@@ -1,14 +1,39 @@
+# app/main.py
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
-from app.routers import bulk_upload, landlord_routers, tenant_routers, property_router, unit_router, lease_router, payment_router, maintenance_router, service_charges_router, admin_router, report_router, notification_router
+from app.routers import (
+    bulk_upload,
+    landlord_routers,
+    tenant_routers,
+    property_router,
+    unit_router,
+    lease_router,
+    payment_router,
+    maintenance_router,
+    service_charges_router,
+    admin_router,
+    report_router,
+    notification_router,
+    auth_router,
+)
 from app.services import reminder_service  # import the reminder scheduler
-from app.routers import auth_router
-# create tables
+
+# Create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Property Management API")
 
-# register routers
+# ✅ Enable CORS to allow Flutter Web requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ✅ Register routers
 app.include_router(landlord_routers.router)
 app.include_router(tenant_routers.router)
 app.include_router(property_router.router)
@@ -23,5 +48,5 @@ app.include_router(report_router.router)
 app.include_router(notification_router.router)
 app.include_router(auth_router.router)
 
-# start automatic reminders
+# ✅ Start automatic reminders
 reminder_service.start_scheduler()
