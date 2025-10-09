@@ -24,10 +24,17 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Property Management API")
 
+origins = [
+    "http://localhost:3000",  # React default
+    "http://localhost:63187", # Flutter web dev
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:63187",
+    "*",
+]
 # ✅ Enable CORS to allow Flutter Web requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
+    allow_origins=origins,  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
