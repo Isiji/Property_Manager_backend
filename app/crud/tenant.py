@@ -1,86 +1,58 @@
 # app/crud/tenant.py
 from sqlalchemy.orm import Session
+from typing import Optional
 from app import models
-from app.schemas.tenant_schema import TenantCreate, TenantUpdate, TenantSelfRegister
-from fastapi import HTTPException
-from datetime import date
+from app.schemas.tenant_schema import TenantCreate, TenantUpdate
 
-def create_tenant(db: Session, payload: TenantCreate):
-    # check duplicates
-    exists = db.query(models.Tenant).filter(
-        (models.Tenant.email == payload.email) | (models.Tenant.phone == payload.phone)
-    ).first()
-    if exists:
-        raise HTTPException(status_code=400, detail="Tenant with email or phone already exists")
 
-    # create tenant
-    tenant = models.Tenant(**payload.model_dump())
+def create_tenant(db: Session, payload: TenantCreate) -> models.Tenant:
+    """
+    Create ONLY the tenant record.
+    Do NOT create a lease here. The UI will call the lease endpoint separately.
+    Do NOT change unit.occupied here; that happens when a lease is created.
+    """
+    tenant = models.Tenant(
+        name=payload.name,
+        phone=payload.phone,
+        email=payload.email,              # can be None
+        property_id=payload.property_id,
+        unit_id=payload.unit_id,
+        password=None,                    # optional – keep None unless you want to set it
+    )
     db.add(tenant)
     db.commit()
     db.refresh(tenant)
-
-    # ✅ if tenant is linked to a unit, mark unit as occupied and create lease
-    if tenant.unit_id:
-        unit = db.query(models.Unit).filter(models.Unit.id == tenant.unit_id).first()
-        if not unit:
-            raise HTTPException(status_code=404, detail="Assigned unit not found")
-
-        if unit.occupied:
-            raise HTTPException(status_code=400, detail="Unit is already occupied")
-
-        unit.occupied = 1
-
-        lease = models.Lease(
-            tenant_id=tenant.id,
-            unit_id=tenant.unit_id,
-            start_date=date.today(),
-            active=1
-        )
-        db.add(lease)
-
-        db.commit()
-        db.refresh(tenant)
-        db.refresh(unit)
-        db.refresh(lease)
-
     return tenant
 
-def get_tenants(db: Session):
-    return db.query(models.Tenant).all()
 
-def get_tenant(db: Session, tenant_id: int):
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+def get_tenants(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Tenant).offset(skip).limit(limit).all()
+
+
+def get_tenant(db: Session, tenant_id: int) -> Optional[models.Tenant]:
+    return db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+
+
+def update_tenant(db: Session, tenant_id: int, payload: TenantUpdate) -> Optional[models.Tenant]:
+    tenant = get_tenant(db, tenant_id)
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return tenant
+        return None
 
-def update_tenant(db: Session, tenant_id: int, payload: TenantUpdate):
-    tenant = get_tenant(db, tenant_id)  # reuse get_tenant
-    for key, value in payload.dict(exclude_unset=True).items():
-        setattr(tenant, key, value)
+    data = payload.dict(exclude_unset=True)
+    for k, v in data.items():
+        setattr(tenant, k, v)
+
     db.commit()
     db.refresh(tenant)
     return tenant
 
-def delete_tenant(db: Session, tenant_id: int):
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+
+def delete_tenant(db: Session, tenant_id: int) -> bool:
+    tenant = get_tenant(db, tenant_id)
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+        return False
 
-    # ✅ free up unit + close lease
-    if tenant.unit_id:
-        unit = db.query(models.Unit).filter(models.Unit.id == tenant.unit_id).first()
-        if unit:
-            unit.occupied = 0
-
-        lease = db.query(models.Lease).filter(
-            models.Lease.tenant_id == tenant.id,
-            models.Lease.active == 1
-        ).first()
-        if lease:
-            lease.active = 0
-            lease.end_date = date.today()
-
+    # DO NOT toggle unit occupancy here; leases determine occupancy.
     db.delete(tenant)
     db.commit()
-    return {"message": "Tenant deleted successfully and unit marked vacant"}
+    return {"detail": "Tenant deleted successfully"  }

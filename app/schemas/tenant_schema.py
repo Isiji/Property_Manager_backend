@@ -1,34 +1,55 @@
-# app/schemas/tenant.py
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
-# Shared properties
-class TenantBase(BaseModel):
-    name: str
-    email: EmailStr
-    phone: str
 
-# Create payload
-class TenantCreate(TenantBase):
-    pass
+# ---------- Create / Update ----------
 
-# Update payload (all fields optional)
+class TenantCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    phone: str = Field(..., min_length=3)
+    # Make email OPTIONAL to match your model (nullable=True) and your UX
+    email: Optional[EmailStr] = None
+    property_id: int
+    unit_id: int
+    # Optional password for cases where you want to set one during assignment
+    password: Optional[str] = None
+
+
 class TenantUpdate(BaseModel):
     name: Optional[str] = None
-    email: Optional[EmailStr] = None
     phone: Optional[str] = None
-    unit_id: Optional[int] = None  # allow updating assigned unit
+    email: Optional[EmailStr] = None
+    # You can also allow property_id / unit_id updates if your business rules permit it:
+    # property_id: Optional[int] = None
+    # unit_id: Optional[int] = None
+    password: Optional[str] = None
 
-# Response model
-class TenantOut(TenantBase):
+
+# ---------- Read / Out ----------
+
+class TenantOut(BaseModel):
     id: int
+    name: str
+    phone: str
+    email: Optional[EmailStr] = None
+    property_id: int
+    unit_id: int
 
     class Config:
-        model_config = ConfigDict(from_attributes=True)
+        from_attributes = True
+
+
+# ---------- Self-register flow (if you use it) ----------
 
 class TenantSelfRegister(BaseModel):
     name: str
-    email: EmailStr
     phone: str
-    property_id: int          # property code
-    unit_number: str 
+    # Keep this optional as well to align with the rest
+    email: Optional[EmailStr] = None
+    # If your self-register uses property_code+unit_number instead of ids:
+    # property_code: str
+    # unit_number: str
+    # Or if you already mapped ids on the client, keep ids:
+    property_id: int
+    unit_id: int
+    password: Optional[str] = None
