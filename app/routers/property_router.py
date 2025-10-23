@@ -1,176 +1,187 @@
-# app/routers/property_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
-import traceback
+from typing import List, Optional
+from datetime import date, datetime
 
-from app import models, schemas
+from app import crud, schemas, models
 from app.dependencies import get_db
 from app.crud import property_crud
 
+
 router = APIRouter(prefix="/properties", tags=["Properties"])
 
-# ------------------------------------------------------------------
-# Create Property
-# ------------------------------------------------------------------
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+def _to_iso_date(d: Optional[datetime | date]) -> Optional[str]:
+    """
+    Convert datetime/date to simple 'YYYY-MM-DD' string or None.
+    Ensures FastAPI doesn't complain when schema expects a date.
+    """
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        return d.date().isoformat()
+    if isinstance(d, date):
+        return d.isoformat()
+    return None
+
+
+def _unit_status(u: models.Unit) -> str:
+    """
+    Normalize unit status from boolean-ish occupied flag.
+    """
+    return "occupied" if (getattr(u, "occupied", 0) == 1) else "vacant"
+
+
+def _unit_dict(db: Session, u: models.Unit) -> dict:
+    """
+    Build a safe dict for a unit row, including tenant & active lease summary.
+    """
+    # Get active lease (if any)
+    active_lease = (
+        db.query(models.Lease)
+        .filter(models.Lease.unit_id == u.id, models.Lease.active == 1)
+        .first()
+    )
+
+    # Try to get tenant via lease (preferred), else via relationship (if present)
+    tenant_payload = None
+    if active_lease and active_lease.tenant:
+        t = active_lease.tenant
+        tenant_payload = {
+            "id": t.id,
+            "name": t.name,
+            "phone": t.phone,
+            "email": t.email,
+        }
+    elif hasattr(u, "tenant") and u.tenant:
+        t = u.tenant
+        tenant_payload = {
+            "id": t.id,
+            "name": t.name,
+            "phone": t.phone,
+            "email": t.email,
+        }
+
+    lease_payload = None
+    if active_lease:
+        lease_payload = {
+            "id": active_lease.id,
+            "start_date": _to_iso_date(active_lease.start_date),
+            "end_date": _to_iso_date(active_lease.end_date),
+            "rent_amount": str(active_lease.rent_amount) if active_lease.rent_amount is not None else None,
+            "active": active_lease.active,
+        }
+
+    return {
+        "id": u.id,
+        "number": u.number,
+        "rent_amount": str(u.rent_amount),
+        "property_id": u.property_id,
+        "status": _unit_status(u),  # "occupied" | "vacant"
+        "tenant": tenant_payload,
+        "lease": lease_payload,
+    }
+
+
+def _property_with_units_payload(db: Session, prop: models.Property) -> dict:
+    units_data = []
+    occupied_count = 0
+    for u in prop.units:
+        u_dict = _unit_dict(db, u)
+        units_data.append(u_dict)
+        if u_dict["status"] == "occupied":
+            occupied_count += 1
+
+    total_units = len(prop.units)
+    vacant_count = total_units - occupied_count
+
+    return {
+        "id": prop.id,
+        "name": prop.name,
+        "address": prop.address,
+        "property_code": prop.property_code,  # make sure this exists on your model
+        "total_units": total_units,
+        "occupied_units": occupied_count,
+        "vacant_units": vacant_count,
+        "units": units_data,
+    }
+
+
+# ---------------------------
+# CRUD
+# ---------------------------
+
 @router.post("/", response_model=schemas.PropertyOut)
 def create_property(payload: schemas.PropertyCreate, db: Session = Depends(get_db)):
     try:
-        return property_crud.create_property(db, payload)
+        return crud.property_crud.create_property(db, payload)
     except Exception as e:
+        import traceback
         print("❌ ERROR inside create_property route:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ------------------------------------------------------------------
-# List Properties
-# ------------------------------------------------------------------
+
 @router.get("/", response_model=List[schemas.PropertyOut])
 def list_properties(db: Session = Depends(get_db)):
-    return property_crud.get_properties(db)
+    return crud.property_crud.get_properties(db)
 
-# ------------------------------------------------------------------
-# Get Single Property
-# ------------------------------------------------------------------
+
 @router.get("/{property_id}", response_model=schemas.PropertyOut)
 def get_property(property_id: int, db: Session = Depends(get_db)):
-    prop = property_crud.get_property(db, property_id)
+    prop = crud.property_crud.get_property(db, property_id)
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
     return prop
 
-# ------------------------------------------------------------------
-# Update Property
-# ------------------------------------------------------------------
+
 @router.put("/{property_id}", response_model=schemas.PropertyOut)
 def update_property(property_id: int, payload: schemas.PropertyUpdate, db: Session = Depends(get_db)):
-    prop = property_crud.update_property(db, property_id, payload)
+    prop = crud.property_crud.update_property(db, property_id, payload)
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
     return prop
 
-# ------------------------------------------------------------------
-# Delete Property
-# ------------------------------------------------------------------
+
 @router.delete("/{property_id}", response_model=schemas.PropertyOut)
 def delete_property(property_id: int, db: Session = Depends(get_db)):
-    prop = property_crud.delete_property(db, property_id)
+    prop = crud.property_crud.delete_property(db, property_id)
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
     return prop
 
-# ------------------------------------------------------------------
-# Helpers / Filters
-# ------------------------------------------------------------------
-@router.get("/landlord/{landlord_id}", response_model=List[schemas.PropertyOut])
+
+# ---------------------------
+# Helpers / Aggregates
+# ---------------------------
+
+@router.get("/landlord/{landlord_id}")
 def properties_by_landlord(landlord_id: int, db: Session = Depends(get_db)):
-    return property_crud.get_properties_by_landlord(db, landlord_id)
+    """
+    Return landlord properties with a safe structure (dates normalized),
+    so the frontend can show property cards and unit rows without schema
+    date/datetime validation errors.
+    """
+    props = crud.property_crud.get_properties_by_landlord(db, landlord_id)
+    out = []
+    for p in props:
+        out.append(_property_with_units_payload(db, p))
+    return out
+
 
 @router.get("/manager/{manager_id}", response_model=List[schemas.PropertyOut])
 def properties_by_manager(manager_id: int, db: Session = Depends(get_db)):
-    return property_crud.get_properties_by_manager(db, manager_id)
+    return crud.property_crud.get_properties_by_manager(db, manager_id)
 
-# ------------------------------------------------------------------
-# Property + Units (detailed view)
-# ------------------------------------------------------------------
+
 @router.get("/{property_id}/with-units-detailed")
 def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)):
-    """
-    Returns a detailed object:
+    prop = crud.property_crud.get_property_with_units(db, property_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
 
-    {
-      "id": ...,
-      "name": "...",
-      "address": "...",
-      "total_units": N,
-      "occupied_units": M,
-      "vacant_units": K,
-      "units": [
-        {
-          "id": ...,
-          "number": "...",
-          "rent_amount": "....",
-          "status": "occupied" | "vacant",
-          "tenant": { "id": ..., "name": "...", "phone": "...", "email": "..." } | null,
-          "lease": { "id": ..., "start_date": ..., "end_date": ..., "rent_amount": "...", "active": 0|1 } | null
-        },
-        ...
-      ]
-    }
-    """
-    try:
-        prop = property_crud.get_property_with_units(db, property_id)
-        if not prop:
-            raise HTTPException(status_code=404, detail="Property not found")
-
-        units_data = []
-        occupied_count = 0
-        vacant_count = 0
-
-        for u in prop.units:
-            # derive status from `occupied` (0/1)
-            is_occupied = (u.occupied == 1) or (u.occupied is True)
-            status = "occupied" if is_occupied else "vacant"
-            if is_occupied:
-                occupied_count += 1
-            else:
-                vacant_count += 1
-
-            # Prefer relationship if present (Unit.lease is uselist=False)
-            active_lease = None
-            if getattr(u, "lease", None) and getattr(u.lease, "active", 0) == 1:
-                active_lease = u.lease
-            else:
-                # fallback query, in case relationship isn't loaded
-                active_lease = (
-                    db.query(models.Lease)
-                    .filter(models.Lease.unit_id == u.id, models.Lease.active == 1)
-                    .first()
-                )
-
-            # tenant comes from the active lease (if any)
-            tenant_info = None
-            if active_lease and getattr(active_lease, "tenant", None):
-                t = active_lease.tenant
-                tenant_info = {
-                    "id": t.id,
-                    "name": t.name,
-                    "phone": t.phone,
-                    "email": t.email,
-                }
-
-            lease_info = None
-            if active_lease:
-                lease_info = {
-                    "id": active_lease.id,
-                    "start_date": active_lease.start_date,
-                    "end_date": active_lease.end_date,
-                    "rent_amount": str(active_lease.rent_amount),
-                    "active": active_lease.active,
-                }
-
-            units_data.append({
-                "id": u.id,
-                "number": u.number,
-                "rent_amount": str(u.rent_amount),
-                "status": status,
-                "tenant": tenant_info,
-                "lease": lease_info,
-            })
-
-        return {
-            "id": prop.id,
-            "name": prop.name,
-            "address": prop.address,
-            "total_units": len(prop.units),
-            "occupied_units": occupied_count,
-            "vacant_units": vacant_count,
-            "units": units_data
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print("❌ ERROR inside property_with_units_detailed:", e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to build property detail")
+    return _property_with_units_payload(db, prop)
