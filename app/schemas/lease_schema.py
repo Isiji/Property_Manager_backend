@@ -1,56 +1,43 @@
-from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
-from decimal import Decimal
+from datetime import date, datetime
 
-# =========================
-# Nested Schemas
-# =========================
-class TenantOut(BaseModel):
-    id: int
-    name: str
-    email: Optional[str] = None
-    phone: Optional[str] = None
-
-    class Config:
-        model_config = ConfigDict(from_attributes=True)
-
-
-class UnitOut(BaseModel):
-    id: int
-    number: str
-    rent_amount: Decimal
-
-    class Config:
-        model_config = ConfigDict(from_attributes=True)
-
-
-# =========================
-# Lease Schemas
-# =========================
 class LeaseBase(BaseModel):
     tenant_id: int
     unit_id: int
-    rent_amount: Decimal = Field(..., max_digits=10, decimal_places=2)
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
+    # Use date (not datetime) to avoid "date_from_datetime_inexact"
+    start_date: date=Field(default_factory=date.today)
+    end_date: Optional[date] = None
+    # rent could be null for legacy rows; keep it optional in API
+    rent_amount: Optional[float] = None
+    # Optional in payload; defaults to 1 in CRUD
+    active: Optional[int] = 1
 
+    @field_validator("start_date", "end_date", mode="before")
+    def parse_dates(cls, v):
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, str) and "T" in v:
+            return datetime.fromisoformat(v).date()
+        return v
 
 class LeaseCreate(LeaseBase):
     pass
 
-
 class LeaseUpdate(BaseModel):
-    rent_amount: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2)
-    end_date: Optional[datetime] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    rent_amount: Optional[float] = None
     active: Optional[int] = None
 
-
-class LeaseOut(LeaseBase):
+class LeaseOut(BaseModel):
     id: int
+    tenant_id: int
+    unit_id: int
+    start_date: date
+    end_date: Optional[date] = None
+    rent_amount: Optional[float] = None
     active: int
-    tenant: Optional[TenantOut] = None
-    unit: Optional[UnitOut] = None
 
     class Config:
-        model_config = ConfigDict(from_attributes=True)
+        from_attributes = True
