@@ -1,12 +1,13 @@
-# app/routers/tenant.py
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+from datetime import date
+
 from app.dependencies import get_db
-from app.schemas.tenant_schema import TenantCreate, TenantOut, TenantUpdate, TenantSelfRegister
+from app.schemas.tenant_schema import TenantCreate, TenantOut, TenantUpdate
+from app.schemas.lease_schema import LeaseOut  # if you have one; else return dicts
+from app import models
 from app.crud import tenant as crud_tenant
-from app import crud, models
-from fastapi import HTTPException
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
@@ -19,51 +20,67 @@ def list_tenants(db: Session = Depends(get_db)):
     return crud_tenant.get_tenants(db)
 
 @router.get("/{tenant_id}", response_model=TenantOut)
-def get_tenant(tenant_id: int, db: Session = Depends(get_db)):
-    return crud_tenant.get_tenant(db, tenant_id)
+def get_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
+    t = crud_tenant.get_tenant(db, tenant_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return t
 
 @router.put("/{tenant_id}", response_model=TenantOut)
 def update_tenant(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
-    return crud_tenant.update_tenant(db, tenant_id, payload)
+    t = crud_tenant.update_tenant(db, tenant_id, payload)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return t
 
-def delete_tenant(db: Session, tenant_id: int):
-    tenant = get_tenant(db, tenant_id)
-    
-    # Set unit as vacant
-    for lease in tenant.leases:
-        if lease.active == 1:
-            lease.active = 0
-            if lease.unit:
-                lease.unit.occupied = 0
+@router.delete("/{tenant_id}", response_model=dict)
+def delete_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
+    ok = crud_tenant.delete_tenant(db, tenant_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"ok": True, "message": "Tenant deleted successfully"}
 
-    db.delete(tenant)
-    db.commit()
-    return {"message": "Tenant deleted successfully"}
+# ------- NEW: find by phone (for assigning existing) -------
+@router.get("/by-phone", response_model=TenantOut)
+def get_by_phone(phone: str = Query(...), db: Session = Depends(get_db)):
+    t = crud_tenant.get_tenant_by_phone(db, phone)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return t
 
-@router.post("/self-register", response_model=TenantOut)
-def tenant_self_register(payload: TenantSelfRegister, db: Session = Depends(get_db)):
-    # 1. Check property exists
-    prop = crud.property_crud.get_property(db, payload.property_id)
-    if not prop:
-        raise HTTPException(status_code=404, detail="Property not found")
-    
-    # 2. Check unit exists
-    unit = db.query(models.Unit).filter(
-        models.Unit.property_id == payload.property_id,
-        models.Unit.number == payload.unit_number
-    ).first()
+# ------- NEW: assign existing tenant to a unit -------
+class AssignExistingPayload(models.Base):  # quick improvised schema class
+    __abstract__ = True
+
+from pydantic import BaseModel
+class AssignExistingTenant(BaseModel):
+    phone: str
+    unit_id: int
+    rent_amount: float
+    start_date: date
+
+@router.post("/assign-existing", response_model=dict)
+def assign_existing(payload: AssignExistingTenant, db: Session = Depends(get_db)):
+    tenant = crud_tenant.get_tenant_by_phone(db, payload.phone)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    unit = db.query(models.Unit).filter(models.Unit.id == payload.unit_id).first()
     if not unit:
         raise HTTPException(status_code=404, detail="Unit not found")
-    
-    # 3. Check if unit already has active lease
-    active_lease = db.query(models.Lease).filter(
-        models.Lease.unit_id == unit.id,
-        models.Lease.active == 1
-    ).first()
-    if active_lease:
-        raise HTTPException(status_code=400, detail="Unit is already occupied")
 
-    # 4. Create tenant
-    tenant = crud.tenant.create_tenant(db, payload)
-
-    return tenant
+    lease = crud_tenant.assign_existing_tenant_to_unit(
+        db=db,
+        tenant=tenant,
+        unit=unit,
+        rent_amount=payload.rent_amount,
+        start_date=payload.start_date,
+    )
+    return {
+        "ok": True,
+        "lease_id": lease.id,
+        "tenant_id": tenant.id,
+        "unit_id": unit.id,
+        "start_date": lease.start_date.isoformat(),
+        "rent_amount": str(lease.rent_amount) if lease.rent_amount is not None else None,
+    }
