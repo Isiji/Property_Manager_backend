@@ -17,6 +17,7 @@ from app.routers import (
     notification_router,
     auth_router,
     payout_router,
+    bulk_router,
 )
 from app.services import reminder_service  # import the reminder scheduler
 
@@ -56,6 +57,7 @@ app.include_router(report_router.router)
 app.include_router(notification_router.router)
 app.include_router(auth_router.router)
 app.include_router(payout_router.router)
+app.include_router(bulk_router.router)
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
