@@ -18,7 +18,7 @@ class Landlord(Base):
         back_populates="landlord",
         cascade="all, delete-orphan"
     )
-
+    payouts = relationship("LandlordPayout", back_populates="landlord", cascade="all, delete-orphan")
 
 class PropertyManager(Base):
     __tablename__ = "property_managers"
