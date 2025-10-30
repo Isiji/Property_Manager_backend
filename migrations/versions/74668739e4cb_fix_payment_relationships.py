@@ -44,6 +44,22 @@ def upgrade() -> None:
                existing_type=sa.INTEGER(),
                nullable=False)
     # ### end Alembic commands ###
+    # If you cast start_date to timestamp
+    op.alter_column(
+        "leases",
+        "start_date",
+        type_=sa.TIMESTAMP(timezone=False),
+        postgresql_using="start_date::timestamp without time zone",
+    )
+
+    # If you also alter end_date, do the same
+    op.alter_column(
+        "leases",
+        "end_date",
+        type_=sa.TIMESTAMP(timezone=False),
+        postgresql_using="end_date::timestamp without time zone",
+    )
+
 
 
 def downgrade() -> None:

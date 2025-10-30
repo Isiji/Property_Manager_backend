@@ -1,11 +1,10 @@
-# app/crud/admin_crud.py
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
 from app.models.user_models import Admin
 
-def create_admin(db: Session, name: str, email: str, phone: str | None, password: str) -> Admin:
-    obj = Admin(name=name, email=email, phone=phone, password=password)
+def create_admin(db: Session, name: str, email: str, phone: str | None, password: str, id_number: str | None = None) -> Admin:
+    obj = Admin(name=name, email=email, phone=phone, password=password, id_number=id_number)
     db.add(obj)
     try:
         db.commit()
@@ -13,9 +12,10 @@ def create_admin(db: Session, name: str, email: str, phone: str | None, password
         return obj
     except IntegrityError as e:
         db.rollback()
-        if "email" in str(e.orig).lower():
+        msg = str(e.orig).lower()
+        if "email" in msg:
             raise HTTPException(status_code=400, detail="Email already registered")
-        if "phone" in str(e.orig).lower():
+        if "phone" in msg:
             raise HTTPException(status_code=400, detail="Phone already registered")
         raise HTTPException(status_code=400, detail="Duplicate entry")
 

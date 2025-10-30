@@ -28,7 +28,8 @@ def create_tenant(db: Session, payload: schemas.TenantCreate) -> models.Tenant:
         email=payload.email,
         property_id=payload.property_id,
         unit_id=payload.unit_id,
-        password=None,  # optional
+        password=None if payload.password is None else payload.password,  # hash if needed
+        id_number=payload.id_number,  # <— NEW
     )
     db.add(t)
     db.commit()
@@ -39,9 +40,17 @@ def update_tenant(db: Session, tenant_id: int, payload: schemas.TenantUpdate):
     t = get_tenant(db, tenant_id)
     if not t:
         return None
+
     data = payload.model_dump(exclude_unset=True)
+
+    # If you hash passwords, do it here before setting.
+    # Example:
+    # if "password" in data and data["password"] is not None:
+    #     data["password"] = hash_password(data["password"])
+
     for k, v in data.items():
         setattr(t, k, v)
+
     db.commit()
     db.refresh(t)
     return t
@@ -87,7 +96,7 @@ def assign_existing_tenant_to_unit(
     if active:
         raise HTTPException(status_code=400, detail="Tenant already has an active lease")
 
-    # ✅ keep model consistent
+    # Keep model consistent
     tenant.unit_id = unit.id
 
     lease = models.Lease(

@@ -1,7 +1,7 @@
+# models.py (or wherever these live)
 from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 from app.database import Base
-
 
 class Landlord(Base):
     __tablename__ = "landlords"
@@ -11,8 +11,8 @@ class Landlord(Base):
     phone = Column(String, unique=True, nullable=False, index=True)
     email = Column(String, unique=True, nullable=True, index=True)
     password = Column(String, nullable=False)  # store hashed password
+    id_number = Column(String, nullable=True, index=True)  # <— NEW
 
-    # Relationship with properties
     properties = relationship(
         "Property",
         back_populates="landlord",
@@ -28,10 +28,9 @@ class PropertyManager(Base):
     phone = Column(String, unique=True, nullable=False, index=True)
     email = Column(String, unique=True, nullable=True, index=True)
     password = Column(String, nullable=False)  # hashed password
+    id_number = Column(String, nullable=True, index=True)  # <— NEW
 
-    # A manager can oversee many properties
     properties = relationship("Property", back_populates="manager")
-
 
 class Tenant(Base):
     __tablename__ = "tenants"
@@ -43,29 +42,12 @@ class Tenant(Base):
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=False)
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
     password = Column(String, nullable=True)  # optional
+    id_number = Column(String, nullable=True, index=True)  # <— NEW
 
-    # Relationships
-    leases = relationship(
-        "Lease",
-        back_populates="tenant",
-        cascade="all, delete-orphan"
-    )
-    payments = relationship(
-        "Payment",
-        back_populates="tenant",
-        cascade="all, delete-orphan"
-    )
-    service_charges = relationship(
-        "ServiceCharge",
-        back_populates="tenant",
-        cascade="all, delete-orphan"
-    )
-    maintenance_requests = relationship(
-        "MaintenanceRequest",
-        back_populates="tenant",
-        cascade="all, delete-orphan"
-    )
-
+    leases = relationship("Lease", back_populates="tenant", cascade="all, delete-orphan")
+    payments = relationship("Payment", back_populates="tenant", cascade="all, delete-orphan")
+    service_charges = relationship("ServiceCharge", back_populates="tenant", cascade="all, delete-orphan")
+    maintenance_requests = relationship("MaintenanceRequest", back_populates="tenant", cascade="all, delete-orphan")
 
 class Admin(Base):
     __tablename__ = "admins"
@@ -75,3 +57,4 @@ class Admin(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     phone = Column(String, unique=True, nullable=True, index=True)
     password = Column(String, nullable=False)  # hashed password
+    id_number = Column(String, nullable=True, index=True)  # <— NEW

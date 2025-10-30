@@ -9,8 +9,8 @@ def get_property_manager(db: Session, manager_id: int) -> PropertyManager | None
 def get_property_managers(db: Session, skip: int = 0, limit: int = 100):
     return db.query(PropertyManager).offset(skip).limit(limit).all()
 
-def create_property_manager(db: Session, name: str, phone: str, email: str | None = None) -> PropertyManager:
-    obj = PropertyManager(name=name, phone=phone, email=email)
+def create_property_manager(db: Session, name: str, phone: str, email: str | None = None, id_number: str | None = None) -> PropertyManager:
+    obj = PropertyManager(name=name, phone=phone, email=email, id_number=id_number)
     db.add(obj)
     try:
         db.commit()
