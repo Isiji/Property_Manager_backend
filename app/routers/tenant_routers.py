@@ -1,17 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from typing import List, Optional
+# app/routers/tenant_router.py
 from datetime import date
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
 from app.schemas.tenant_schema import TenantCreate, TenantOut, TenantUpdate
-from app.schemas.lease_schema import LeaseOut  # if you have one; else return dicts
 from app import models
 from app.crud import tenant as crud_tenant
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
-@router.post("/", response_model=TenantOut)
+@router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
     return crud_tenant.create_tenant(db, payload)
 
@@ -26,8 +28,17 @@ def get_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return t
 
+# Full update
 @router.put("/{tenant_id}", response_model=TenantOut)
-def update_tenant(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
+def update_tenant_put(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
+    t = crud_tenant.update_tenant(db, tenant_id, payload)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return t
+
+# Partial update (NEW)
+@router.patch("/{tenant_id}", response_model=TenantOut)
+def update_tenant_patch(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
     t = crud_tenant.update_tenant(db, tenant_id, payload)
     if not t:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -40,7 +51,7 @@ def delete_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return {"ok": True, "message": "Tenant deleted successfully"}
 
-# ------- NEW: find by phone (for assigning existing) -------
+# ------- find by phone (for assigning existing) -------
 @router.get("/by-phone", response_model=TenantOut)
 def get_by_phone(phone: str = Query(...), db: Session = Depends(get_db)):
     t = crud_tenant.get_tenant_by_phone(db, phone)
@@ -48,11 +59,7 @@ def get_by_phone(phone: str = Query(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return t
 
-# ------- NEW: assign existing tenant to a unit -------
-class AssignExistingPayload(models.Base):  # quick improvised schema class
-    __abstract__ = True
-
-from pydantic import BaseModel
+# ------- assign existing tenant to a unit -------
 class AssignExistingTenant(BaseModel):
     phone: str
     unit_id: int
