@@ -1,15 +1,16 @@
-# app/routers/auth_router.py
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from datetime import date
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
 from app.schemas.auth_schemas import RegisterUser, LoginUser
 from app.auth.utils import hash_password, verify_password, create_access_token
 
-# Models are split by domain
+# NOTE: adjust these imports to your actual model module paths.
 from app.models.user_models import Landlord, PropertyManager, Tenant, Admin
 from app.models.property_models import Property, Unit, Lease
+
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -17,57 +18,106 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register")
 def register_user(data: RegisterUser, db: Session = Depends(get_db)):
     """
-    Register a user by role.
-    - For tenant: requires property_code and unit_id; creates tenant + ACTIVE lease and marks unit occupied.
-    - For other roles: normal create, password required.
+    Register any role. For tenants:
+      - Provide property_code and either unit_number (preferred) or unit_id.
+      - Creates the tenant, an ACTIVE lease, and marks the unit occupied.
     """
     print("🟢 Received registration data:", data.dict())
-    user = None
+
+    # Password requirement for non-tenants
+    if data.role != "tenant" and not data.password:
+        raise HTTPException(status_code=400, detail="Password is required for this role")
 
     try:
-        if data.role != "tenant" and not data.password:
-            raise HTTPException(status_code=400, detail="Password is required for this role")
-
+        # Landlord
         if data.role == "landlord":
-            print("➡️ Creating landlord...")
             user = Landlord(
                 name=data.name,
                 phone=data.phone,
                 email=data.email,
-                password=hash_password(data.password),
+                password=hash_password(data.password),  # store hashed
+                id_number=data.id_number,
             )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print(f"✅ Landlord registered (ID={user.id})")
+            return {"message": "Landlord registered successfully", "id": user.id}
 
-        elif data.role == "manager":
-            print("➡️ Creating manager...")
+        # Manager
+        if data.role == "manager":
             user = PropertyManager(
                 name=data.name,
                 phone=data.phone,
                 email=data.email,
                 password=hash_password(data.password),
+                id_number=data.id_number,
             )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print(f"✅ Manager registered (ID={user.id})")
+            return {"message": "Manager registered successfully", "id": user.id}
 
-        elif data.role == "tenant":
-            print("➡️ Creating tenant via self-registration...")
-            if not data.property_code or not data.unit_id:
-                raise HTTPException(status_code=400, detail="Property code and unit are required for tenant registration")
+        # Admin
+        if data.role == "admin":
+            user = Admin(
+                name=data.name,
+                phone=data.phone,
+                email=data.email,
+                password=hash_password(data.password),
+                id_number=data.id_number,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print(f"✅ Admin registered (ID={user.id})")
+            return {"message": "Admin registered successfully", "id": user.id}
 
-            # 1) Property by code
+        # Tenant
+        if data.role == "tenant":
+            # Guard: property + (unit_number or unit_id) are required
+            if not data.property_code or (data.unit_number is None and data.unit_id is None):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Property code and unit (number or id) are required for tenant registration",
+                )
+
+            # Resolve property by code
             prop = db.query(Property).filter(Property.property_code == data.property_code).first()
             if not prop:
                 raise HTTPException(status_code=404, detail="Invalid property code")
 
-            # 2) Unit belongs to that property and is vacant
-            unit = (
-                db.query(Unit)
-                .filter(Unit.id == data.unit_id, Unit.property_id == prop.id)
-                .first()
-            )
-            if not unit:
-                raise HTTPException(status_code=404, detail="Unit not found for this property")
-            if int(unit.occupied or 0) == 1:
+            # Prefer unit_number if provided (case-insensitive, trimmed, scoped to property)
+            unit = None
+            if data.unit_number:
+                unit = (
+                    db.query(Unit)
+                    .filter(
+                        Unit.property_id == prop.id,
+                        func.lower(func.trim(Unit.number)) == func.lower(func.trim(data.unit_number)),
+                    )
+                    .first()
+                )
+                if not unit:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f'Unit "{data.unit_number}" not found for this property',
+                    )
+            else:
+                unit = (
+                    db.query(Unit)
+                    .filter(Unit.id == data.unit_id, Unit.property_id == prop.id)
+                    .first()
+                )
+                if not unit:
+                    raise HTTPException(status_code=404, detail="Unit not found for this property")
+
+            # Prevent double-occupancy
+            if int(getattr(unit, "occupied", 0) or 0) == 1:
                 raise HTTPException(status_code=409, detail="Unit already occupied")
 
-            # 3) Create tenant row
+            # Create tenant
             user = Tenant(
                 name=data.name,
                 phone=data.phone,
@@ -75,11 +125,12 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 property_id=prop.id,
                 unit_id=unit.id,
                 password=hash_password(data.password) if data.password else None,
+                id_number=data.id_number,
             )
             db.add(user)
-            db.flush()  # get user.id without committing
+            db.flush()  # get user.id
 
-            # 4) Create ACTIVE lease + mark unit occupied
+            # Create ACTIVE lease and mark unit occupied
             rent_amount = float(getattr(unit, "rent_amount", 0) or 0)
             lease = Lease(
                 tenant_id=user.id,
@@ -96,7 +147,7 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.refresh(user)
             db.refresh(lease)
 
-            print(f"✅ Tenant registered, lease={lease.id}, unit occupied")
+            print(f"✅ Tenant registered (tenant_id={user.id}, lease_id={lease.id}, unit_id={unit.id})")
             return {
                 "message": "Tenant registered successfully",
                 "id": user.id,
@@ -105,28 +156,11 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 "property_id": prop.id,
             }
 
-        elif data.role == "admin":
-            print("➡️ Creating admin...")
-            user = Admin(
-                name=data.name,
-                phone=data.phone,
-                email=data.email,
-                password=hash_password(data.password),
-            )
+        # Unknown role
+        raise HTTPException(status_code=400, detail="Invalid role")
 
-        else:
-            raise HTTPException(status_code=400, detail="Invalid role")
-
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        print(f"✅ {data.role.capitalize()} registered successfully (ID={user.id})")
-        return {"message": f"{data.role.capitalize()} registered successfully", "id": user.id}
-
-    except HTTPException as e:
+    except HTTPException:
         db.rollback()
-        print(f"⚠️ HTTPException: {e.detail}")
         raise
     except Exception as e:
         db.rollback()
@@ -137,8 +171,9 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
 @router.post("/login")
 def login_user(data: LoginUser, db: Session = Depends(get_db)):
     """
-    Login by role. Non-tenant requires password; tenant can be passwordless per your flow.
-    Returns JWT + user id + role.
+    Role-based login.
+    - Tenant can be passwordless (if you allow it).
+    - Others must supply a valid password.
     """
     print("🟢 Login request:", data.dict())
 
