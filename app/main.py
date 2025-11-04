@@ -19,6 +19,7 @@ from app.routers import (
     payout_router,
     bulk_router,
     tenant_portal_router,
+    property_units_lookup,
 )
 from app.services import reminder_service  # import the reminder scheduler
 
@@ -60,6 +61,8 @@ app.include_router(auth_router.router)
 app.include_router(payout_router.router)
 app.include_router(bulk_router.router)
 app.include_router(tenant_portal_router.router)
+app.include_router(property_units_lookup.router)
+
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
