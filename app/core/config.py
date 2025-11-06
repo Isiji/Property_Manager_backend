@@ -23,16 +23,23 @@ class Settings(BaseSettings):
     SMS_ENABLED: bool = True
     EMAIL_ENABLED: bool = True
 
-    # ─────────── MPESA (DARAJA) CONFIG ───────────
+    # ─────────── MPESA (Daraja) ───────────
     DARAJA_BASE_URL: Optional[str] = None
     DARAJA_CONSUMER_KEY: Optional[str] = None
     DARAJA_CONSUMER_SECRET: Optional[str] = None
+
+    # (B2C/B2B; not used for STK right now)
     DARAJA_SHORTCODE: Optional[str] = None
     DARAJA_INITIATOR_NAME: Optional[str] = None
     DARAJA_INITIATOR_PASSWORD: Optional[str] = None
     DARAJA_SECURITY_CERT_PATH: Optional[str] = None
     DARAJA_RESULT_URL: Optional[str] = None
     DARAJA_TIMEOUT_URL: Optional[str] = None
+
+    # Lipa Na M-Pesa Online (STK Push)
+    DARAJA_LNM_SHORTCODE: Optional[str] = None
+    DARAJA_LNM_PASSKEY: Optional[str] = None
+    DARAJA_CALLBACK_URL: Optional[str] = None
 
     # ─────────── EMAIL CONFIG ───────────
     EMAIL_HOST: Optional[str] = None
@@ -51,7 +58,6 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    """Loads environment variables once and caches them."""
     return Settings()
 
 settings = get_settings()

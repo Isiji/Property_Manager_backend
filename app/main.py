@@ -1,5 +1,5 @@
 # app/main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.routers import (
@@ -21,6 +21,7 @@ from app.routers import (
     tenant_portal_router,
     property_units_lookup,
     payments_mpesa,
+    webhooks_daraja,
 )
 from app.services import reminder_service  # import the reminder scheduler
 
@@ -35,15 +36,34 @@ origins = [
     "http://127.0.0.1:8000",
     "http://127.0.0.1:63187",
     "*",
+    "https://bruce-nonimaginational-noel.ngrok-free.dev",
 ]
 # ✅ Enable CORS to allow Flutter Web requests
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=origins,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/", include_in_schema=False)
+def read_root():
+    return {"status": "Ok",
+            "service": "Property Management API",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "health": "/healthz",
+            }
+@app.get("/healthz", include_in_schema=False)
+def health_check():
+    return {"ok": True}
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
 
 # ✅ Register routers
 app.include_router(landlord_routers.router)
@@ -64,6 +84,7 @@ app.include_router(bulk_router.router)
 app.include_router(tenant_portal_router.router)
 app.include_router(property_units_lookup.router)
 app.include_router(payments_mpesa.router)
+app.include_router(webhooks_daraja.router)
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
