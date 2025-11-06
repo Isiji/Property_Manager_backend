@@ -9,21 +9,22 @@ from sqlalchemy import (
     DateTime,
     Enum,
     UniqueConstraint,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 
-from ..database import Base
+from app.database import Base
 
 
 # --------------------------
 # Enums
 # --------------------------
 class PaymentStatus(str, enum.Enum):
-    pending = "pending"
-    paid = "paid"
-    overdue = "overdue"
+    pending = "pending"   # created / initiated, awaiting confirmation
+    paid = "paid"         # fully paid / confirmed
+    overdue = "overdue"   # not used by STK itself, but useful for monthly tagging
 
 
 class ChargeStatus(str, enum.Enum):
@@ -53,6 +54,9 @@ class Payment(Base):
     period = Column(String(7), nullable=False, index=True)  # YYYY-MM
     paid_date = Column(Date, nullable=True)  # actual paid day (YYYY-MM-DD)
 
+    # Provider reference / receipt (M-Pesa receipt, bank ref, etc.)
+    reference = Column(String(64), nullable=True, index=True)
+
     # Status and timestamps
     status = Column(Enum(PaymentStatus), default=PaymentStatus.pending, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -60,6 +64,7 @@ class Payment(Base):
     __table_args__ = (
         # prevent duplicate payment rows for the same lease+month
         UniqueConstraint("lease_id", "period", name="uq_payments_lease_period"),
+        Index("ix_payments_reference_not_null", "reference"),
     )
 
     # Relationships
