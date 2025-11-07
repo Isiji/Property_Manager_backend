@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
@@ -12,6 +12,7 @@ from app import models
 from app.services.daraja_client import daraja_client
 
 router = APIRouter(prefix="/payments/mpesa", tags=["Payments: M-Pesa"])
+webhook_router = APIRouter(prefix="/payments/webhooks", tags=["Payments: Webhooks"])
 
 def _yyyymm(d: date) -> str:
     return f"{d.year}-{str(d.month).zfill(2)}"
@@ -41,7 +42,12 @@ def initiate_stk(
     role = current_user.get("role")
     sub = int(current_user.get("sub", 0) or 0)
 
-    lease = db.query(models.Lease).filter(models.Lease.id == int(lease_id)).filter(models.Lease.active == 1).first()
+    lease = (
+        db.query(models.Lease)
+        .filter(models.Lease.id == int(lease_id))
+        .filter(models.Lease.active == 1)
+        .first()
+    )
     if not lease:
         raise HTTPException(status_code=404, detail="Active lease not found")
 
@@ -70,7 +76,7 @@ def initiate_stk(
             amount=amount,
             period=period,
             paid_date=None,
-            reference=None,               # <-- make sure this column exists (see model)
+            reference=None,
             status=models.PaymentStatus.pending,
         )
         db.add(p)
@@ -78,6 +84,7 @@ def initiate_stk(
         db.refresh(p)
     else:
         p.amount = amount
+        p.status = models.PaymentStatus.pending
         db.commit()
         db.refresh(p)
 
@@ -139,3 +146,94 @@ def payment_status(
         "reference": p.reference,
         "amount": float(p.amount),
     }
+
+# --- SANDBOX/LOCAL: simulate marking a payment PAID ---
+@router.post("/simulate/mark-paid")
+def simulate_mark_paid(
+    payment_id: int,
+    reference: str = "SIM-RECEIPT",
+    db: Session = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    # allow landlord, admin, manager to simulate
+    if current_user.get("role") not in ("admin", "manager", "landlord"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    p = db.query(models.Payment).filter(models.Payment.id == payment_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    p.status = models.PaymentStatus.paid
+    p.paid_date = date.today()
+    p.reference = reference
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return {
+        "ok": True,
+        "payment_id": p.id,
+        "status": p.status.value,
+        "paid_date": p.paid_date.isoformat(),
+        "reference": p.reference
+    }
+
+# --- STK CALLBACK (use this as DARAJA_RESULT_URL / DARAJA_TIMEOUT_URL) ---
+@webhook_router.post("/daraja")
+async def daraja_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Receives STK callback JSON from Safaricom.
+    Marks the most recent pending payment for the MSISDN as paid.
+    """
+    payload = await request.json()
+    try:
+        stk = payload["Body"]["stkCallback"]
+    except Exception:
+        # ignore malformed
+        return {"ok": True}
+
+    result_code = stk.get("ResultCode")
+    items = {it.get("Name"): it.get("Value") for it in stk.get("CallbackMetadata", {}).get("Item", [])}
+
+    phone = str(items.get("PhoneNumber") or "")
+    receipt = str(items.get("MpesaReceiptNumber") or "")
+    amount = float(items.get("Amount") or 0)
+
+    if result_code == 0 and phone and receipt:
+        def _norm(p: str) -> str:
+            p = p.strip()
+            if p.startswith("+"): p = p[1:]
+            if p.startswith("0"): return "254" + p[1:]
+            if p.startswith("254"): return p
+            if p.startswith("7") and len(p) == 9: return "254" + p
+            return p
+
+        msisdn = _norm(phone)
+
+        # find tenant by any common variant of their phone
+        candidates = [msisdn]
+        if msisdn.startswith("254"):
+            candidates.append("0" + msisdn[-9:])
+
+        tenant = db.query(models.Tenant).filter(models.Tenant.phone.in_(candidates)).first()
+        if tenant:
+            p = (
+                db.query(models.Payment)
+                .filter(models.Payment.tenant_id == tenant.id)
+                .filter(models.Payment.status == models.PaymentStatus.pending)
+                .order_by(models.Payment.created_at.desc())
+                .first()
+            )
+            if p:
+                p.status = models.PaymentStatus.paid
+                p.paid_date = date.today()
+                p.reference = receipt
+                if amount > 0:
+                    p.amount = amount
+                db.add(p)
+                db.commit()
+
+    # Safaricom expects 200 always
+    return {"ok": True}

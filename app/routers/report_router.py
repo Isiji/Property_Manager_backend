@@ -1,3 +1,4 @@
+# app/routers/reports_router.py
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from typing import Dict, Any, List
@@ -5,7 +6,7 @@ import io
 import csv
 from openpyxl import Workbook
 
-from app.dependencies import get_db, get_current_user, role_required
+from app.dependencies import get_db, get_current_user
 from app import models
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -18,9 +19,14 @@ def landlord_monthly_summary(
     landlord_id: int,
     year: int = Query(...),
     month: int = Query(...),
+    response: Response = None,
     db: Session = Depends(get_db),
     current: dict = Depends(get_current_user)
 ) -> Dict[str, Any]:
+    # Disable caching for live flips
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+
     # auth: only this landlord or admin/manager
     role = current.get("role")
     user_id = int(current.get("sub", 0))
@@ -33,17 +39,19 @@ def landlord_monthly_summary(
     props = db.query(models.Property).filter(models.Property.landlord_id == landlord_id).all()
     prop_ids = [p.id for p in props]
 
-    # expected: sum of active lease rent_amount for period (assume constant monthly rent)
+    # expected: active leases on landlord's properties
     active_leases = (
         db.query(models.Lease)
         .filter(models.Lease.active == 1)
         .join(models.Unit, models.Lease.unit_id == models.Unit.id)
-        .filter(models.Unit.property_id.in__(prop_ids))
+        .filter(models.Unit.property_id.in_(prop_ids))
         .all()
     )
 
     expected_total = 0.0
-    property_rows: Dict[int, Dict[str, Any]] = {p.id: {"name": p.name, "expected": 0.0, "received": 0.0, "pending": 0.0} for p in props}
+    property_rows: Dict[int, Dict[str, Any]] = {
+        p.id: {"name": p.name, "expected": 0.0, "received": 0.0, "pending": 0.0} for p in props
+    }
 
     for l in active_leases:
         amt = float(l.rent_amount or 0)
@@ -52,13 +60,14 @@ def landlord_monthly_summary(
         if unit and unit.property_id in property_rows:
             property_rows[unit.property_id]["expected"] += amt
 
-    # received for the period
+    # received: ONLY count payments with status='paid' for that period
     pays = (
         db.query(models.Payment)
         .join(models.Lease, models.Payment.lease_id == models.Lease.id)
         .join(models.Unit, models.Lease.unit_id == models.Unit.id)
-        .filter(models.Unit.property_id.in__(prop_ids))
+        .filter(models.Unit.property_id.in_(prop_ids))
         .filter(models.Payment.period == period)
+        .filter(models.Payment.status == models.PaymentStatus.paid)
         .all()
     )
 
@@ -76,7 +85,7 @@ def landlord_monthly_summary(
     for pid, row in property_rows.items():
         row["pending"] = round(float(row["expected"]) - float(row["received"]), 2)
 
-    # arrears list (top)
+    # arrears list (by lease)
     arrears: List[Dict[str, Any]] = []
     for l in active_leases:
         expected = float(l.rent_amount or 0)
@@ -118,7 +127,7 @@ def landlord_monthly_summary_csv(
     db: Session = Depends(get_db),
     current: dict = Depends(get_current_user)
 ):
-    data = landlord_monthly_summary(landlord_id, year, month, db, current)
+    data = landlord_monthly_summary(landlord_id, year, month, db=db, current=current)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Metric", "Value"])
@@ -144,7 +153,7 @@ def landlord_monthly_summary_xlsx(
     db: Session = Depends(get_db),
     current: dict = Depends(get_current_user)
 ):
-    data = landlord_monthly_summary(landlord_id, year, month, db, current)
+    data = landlord_monthly_summary(landlord_id, year, month, db=db, current=current)
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary"
@@ -154,12 +163,12 @@ def landlord_monthly_summary_xlsx(
     ws.append(["Received Total", data["received_total"]])
     ws.append(["Pending Total", data["pending_total"]])
 
-    ws = wb.createSheet(title="Properties")
+    ws = wb.create_sheet(title="Properties")
     ws.append(["Property", "Expected", "Received", "Pending"])
     for r in data["properties"]:
         ws.append([r["name"], r["expected"], r["received"], r["pending"]])
 
-    ws = wb.createSheet(title="Arrears")
+    ws = wb.create_sheet(title="Arrears")
     ws.append(["Tenant", "Phone", "Expected", "Paid", "Balance", "Lease ID"])
     for a in data["arrears"]:
         ws.append([a["tenant_name"], a["phone"], a["expected"], a["paid"], a["balance"], a["lease_id"]])
