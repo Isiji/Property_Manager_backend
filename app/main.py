@@ -24,7 +24,7 @@ from app.routers import (
     webhooks_daraja,
 )
 from app.services import reminder_service  # import the reminder scheduler
-
+from app.core.config import settings
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -41,7 +41,7 @@ origins = [
 # ✅ Enable CORS to allow Flutter Web requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.CORS_ORIGINS,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
     allow_credentials=True,
     allow_methods=["*"],
