@@ -1,4 +1,3 @@
-# app/routers/payments_mpesa.py
 from __future__ import annotations
 
 from datetime import date
@@ -10,15 +9,14 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_db, get_current_user
 from app import models
 from app.services.daraja_client import daraja_client
-from fastapi.responses import StreamingResponse
-from app.services.receipt_service import build_receipt_pdf
-from io import BytesIO
 
 router = APIRouter(prefix="/payments/mpesa", tags=["Payments: M-Pesa"])
 webhook_router = APIRouter(prefix="/payments/webhooks", tags=["Payments: Webhooks"])
 
+
 def _yyyymm(d: date) -> str:
     return f"{d.year}-{str(d.month).zfill(2)}"
+
 
 def _to_msisdn254(phone: str) -> str:
     p = phone.strip()
@@ -30,6 +28,7 @@ def _to_msisdn254(phone: str) -> str:
     if p.startswith("7") and len(p) == 9:
         return "254" + p
     raise HTTPException(status_code=400, detail="Invalid phone format; expected 07XXXXXXXX or 2547XXXXXXXX")
+
 
 @router.post("/initiate")
 def initiate_stk(
@@ -64,7 +63,6 @@ def initiate_stk(
     msisdn = _to_msisdn254(tenant.phone)
     period = _yyyymm(date.today())
 
-    # ensure/reuse a payment row for this month
     p: Optional[models.Payment] = (
         db.query(models.Payment)
         .filter(models.Payment.lease_id == lease.id)
@@ -117,6 +115,7 @@ def initiate_stk(
         },
     }
 
+
 @router.get("/status")
 def payment_status(
     lease_id: int,
@@ -150,7 +149,7 @@ def payment_status(
         "amount": float(p.amount),
     }
 
-# --- SANDBOX/LOCAL: simulate marking a payment PAID ---
+
 @router.post("/simulate/mark-paid")
 def simulate_mark_paid(
     payment_id: int,
@@ -158,7 +157,6 @@ def simulate_mark_paid(
     db: Session = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    # allow landlord, admin, manager to simulate
     if current_user.get("role") not in ("admin", "manager", "landlord"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
@@ -180,21 +178,16 @@ def simulate_mark_paid(
         "reference": p.reference
     }
 
-# --- STK CALLBACK (use this as DARAJA_RESULT_URL / DARAJA_TIMEOUT_URL) ---
+
 @webhook_router.post("/daraja")
 async def daraja_callback(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """
-    Receives STK callback JSON from Safaricom.
-    Marks the most recent pending payment for the MSISDN as paid.
-    """
     payload = await request.json()
     try:
         stk = payload["Body"]["stkCallback"]
     except Exception:
-        # ignore malformed
         return {"ok": True}
 
     result_code = stk.get("ResultCode")
@@ -214,8 +207,6 @@ async def daraja_callback(
             return p
 
         msisdn = _norm(phone)
-
-        # find tenant by any common variant of their phone
         candidates = [msisdn]
         if msisdn.startswith("254"):
             candidates.append("0" + msisdn[-9:])
@@ -238,55 +229,4 @@ async def daraja_callback(
                 db.add(p)
                 db.commit()
 
-    # Safaricom expects 200 always
     return {"ok": True}
-
-@router.get("/receipt/{payment_id}.pdf")
-def payment_receipt_pdf(
-    payment_id: int,
-    db: Session = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_user),
-):
-    """
-    Generates a PDF receipt for a PAID payment. Requires auth.
-    Tenants can access only their own; landlord/admin/manager can access any on their properties.
-    """
-    # Load payment
-    p = db.query(models.Payment).filter(models.Payment.id == payment_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Payment not found")
-
-    # Only allow if paid
-    if p.status != models.PaymentStatus.paid:
-        raise HTTPException(status_code=400, detail="Receipt available only for PAID payments")
-
-    # AuthZ
-    role = current_user.get("role")
-    sub = int(current_user.get("sub", 0) or 0)
-
-    lease = db.query(models.Lease).filter(models.Lease.id == p.lease_id).first() if p.lease_id else None
-    unit  = db.query(models.Unit).filter(models.Unit.id == p.unit_id).first()
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == p.tenant_id).first()
-    property_ = db.query(models.Property).filter(models.Property.id == unit.property_id).first() if unit else None
-    landlord = db.query(models.Landlord).filter(models.Landlord.id == property_.landlord_id).first() if property_ else None
-
-    if not unit or not tenant or not property_:
-        raise HTTPException(status_code=400, detail="Payment links are inconsistent")
-
-    if role == "tenant":
-        if tenant.id != sub:
-            raise HTTPException(status_code=403, detail="Forbidden")
-    elif role == "landlord":
-        # landlord must own the property
-        if not landlord or landlord.id != sub:
-            raise HTTPException(status_code=403, detail="Forbidden")
-    # admin/manager allowed
-
-    pdf_bytes = build_receipt_pdf(p, tenant, unit, property_, landlord)
-    filename = f"receipt_{payment_id}_{p.period}.pdf"
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-    )
-
