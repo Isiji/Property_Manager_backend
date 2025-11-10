@@ -38,10 +38,12 @@ origins = [
     "http://localhost:63187", # Flutter web dev
     "http://127.0.0.1:8000",
     "http://127.0.0.1:63187",
-    "*",
+    
     "https://bruce-nonimaginational-noel.ngrok-free.dev",
 ]
 # ✅ Enable CORS to allow Flutter Web requests
+print("CORS_ORIGINS:", settings.CORS_ORIGINS),
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
