@@ -1,19 +1,22 @@
 # app/schemas/notification_schema.py
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime
 from typing import Optional
+from datetime import datetime
 
-class NotificationBase(BaseModel):
+class NotificationCreate(BaseModel):
     user_id: int
+    user_type: str       # ✅ required: e.g. "landlord", "property_manager", "tenant", "admin"
     title: str
     message: str
-    channel: Optional[str] = "in_app"
+    channel: str = "inapp"  # inapp | email | whatsapp | all
 
-class NotificationCreate(NotificationBase):
-    pass
-
-class NotificationOut(NotificationBase):
+class NotificationOut(BaseModel):
     id: int
+    user_id: int
+    user_type: str
+    title: str
+    message: str
+    channel: str
     is_read: bool
     created_at: datetime
 

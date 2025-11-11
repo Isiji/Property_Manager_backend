@@ -1,4 +1,4 @@
-# app/routers/tenant_portal.py
+# app/routers/tenant_portal_router.py
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -12,18 +12,18 @@ import jwt  # PyJWT
 from app.database import get_db
 from app import models
 
+# notifications
+from app.services import notification_service
+from app.schemas.notification_schema import NotificationCreate
+
 # ───────────────────────────────────────────────────────────────────────────────
-# Auth helpers: decode JWT and fetch current tenant
-# Adjust imports if your settings live elsewhere.
-# You need: settings.SECRET_KEY, settings.ALGORITHM
+# Auth helpers
 # ───────────────────────────────────────────────────────────────────────────────
 try:
     from app.core.config import settings
     SECRET_KEY = settings.SECRET_KEY
     ALGORITHM = getattr(settings, "ALGORITHM", "HS256")
 except Exception:
-    # Fallback: ONLY for local/dev if you don't have settings wired.
-    # Replace with your real secret/algorithm if needed.
     SECRET_KEY = "CHANGE_ME_SECRET"
     ALGORITHM = "HS256"
 
@@ -54,6 +54,7 @@ def get_current_tenant(db: Session = Depends(get_db), token: str = Depends(oauth
         .options(
             joinedload(models.Tenant.leases).joinedload(models.Lease.unit).joinedload(models.Unit.property),
             joinedload(models.Tenant.payments),
+            joinedload(models.Tenant.maintenance_requests).joinedload(models.MaintenanceRequest.status),
         )
         .filter(models.Tenant.id == int(tenant_id))
         .first()
@@ -65,7 +66,6 @@ def get_current_tenant(db: Session = Depends(get_db), token: str = Depends(oauth
 # ───────────────────────────────────────────────────────────────────────────────
 # Router
 # ───────────────────────────────────────────────────────────────────────────────
-
 router = APIRouter(prefix="/tenants/me", tags=["Tenant Portal"])
 
 def _yyyymm(dt: date | datetime) -> str:
@@ -73,7 +73,6 @@ def _yyyymm(dt: date | datetime) -> str:
 
 @router.get("/overview")
 def tenant_overview(current: models.Tenant = Depends(get_current_tenant), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    # Active lease (if any)
     active_lease: Optional[models.Lease] = None
     for l in current.leases:
         if l.active == 1:
@@ -95,12 +94,11 @@ def tenant_overview(current: models.Tenant = Depends(get_current_tenant), db: Se
         lease_info = {
             "id": active_lease.id,
             "rent_amount": float(active_lease.rent_amount) if active_lease.rent_amount is not None else None,
-            "start_date": active_lease.start_date.isoformat() if active_lease.start_date else None,
-            "end_date": active_lease.end_date.isoformat() if active_lease.end_date else None,
+            "start_date": active_lease.start_date.date().isoformat() if active_lease.start_date else None,
+            "end_date": active_lease.end_date.date().isoformat() if active_lease.end_date else None,
             "active": int(active_lease.active),
         }
 
-        # Payments for current period (YYYY-MM)
         period = _yyyymm(date.today())
         q = (
             db.query(models.Payment)
@@ -133,17 +131,15 @@ def tenant_overview(current: models.Tenant = Depends(get_current_tenant), db: Se
 
 @router.get("/payments")
 def tenant_payments(current: models.Tenant = Depends(get_current_tenant), db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
-    # Gather all payments for all leases of this tenant (usually just the active)
     lease_ids = [l.id for l in current.leases]
     if not lease_ids:
         return []
     rows = (
         db.query(models.Payment)
-        .filter(models.Payment.tenant_id == current.id)  # if your Payment carries tenant_id
+        .filter(models.Payment.tenant_id == current.id)
         .order_by(models.Payment.paid_date.desc().nullslast())
         .all()
     )
-    # Fallback if tenant_id not present on Payment: filter by lease_ids
     if not rows:
         rows = (
             db.query(models.Payment)
@@ -176,9 +172,8 @@ def tenant_maintenance(current: models.Tenant = Depends(get_current_tenant), db:
     for m in rows:
         out.append({
             "id": m.id,
-            "title": m.title,
             "description": m.description,
-            "status": m.status,
+            "status": getattr(m.status, "name", None),
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "updated_at": m.updated_at.isoformat() if m.updated_at else None,
         })
@@ -186,29 +181,83 @@ def tenant_maintenance(current: models.Tenant = Depends(get_current_tenant), db:
 
 @router.post("/maintenance", status_code=201)
 def create_maintenance(payload: Dict[str, Any], current: models.Tenant = Depends(get_current_tenant), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    title = (payload.get("title") or "").strip()
-    description = (payload.get("description") or "").strip() or None
-    if not title:
-        raise HTTPException(status_code=400, detail="Title is required")
+    description = (payload.get("description") or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
+
+    # find or create 'open' status
+    status_row = db.query(models.MaintenanceStatus).filter(models.MaintenanceStatus.name == "open").first()
+    if not status_row:
+        status_row = models.MaintenanceStatus(name="open")
+        db.add(status_row)
+        db.commit()
+        db.refresh(status_row)
+
+    # prefer active lease unit if available
+    unit_id = current.unit_id
+    if not unit_id:
+        active = next((l for l in current.leases if int(l.active or 0) == 1), None)
+        if active:
+            unit_id = active.unit_id
+    if not unit_id:
+        raise HTTPException(status_code=400, detail="No unit found for tenant")
 
     req = models.MaintenanceRequest(
         tenant_id=current.id,
-        property_id=getattr(current, "property_id", None),
-        unit_id=getattr(current, "unit_id", None),
-        title=title,
+        unit_id=unit_id,
         description=description,
-        status="open",
+        status_id=status_row.id,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
     db.add(req)
     db.commit()
     db.refresh(req)
+
+    # Notify landlord + property manager
+    unit_row = (
+        db.query(models.Unit)
+        .options(joinedload(models.Unit.property))
+        .filter(models.Unit.id == unit_id)
+        .first()
+    )
+
+    unit_label = getattr(unit_row, "number", None) or f"Unit {unit_id}"
+    title = "New maintenance request"
+    message = f"{unit_label}: {description}"
+
+    property_row = getattr(unit_row, "property", None)
+
+    # landlord
+    if property_row and getattr(property_row, "landlord_id", None):
+        notification_service.send_notification(
+            db,
+            NotificationCreate(
+                user_id=property_row.landlord_id,
+                user_type="landlord",                 # ✅ required (NOT NULL)
+                title=title,
+                message=message,
+                channel="inapp",
+            ),
+        )
+
+    # property manager
+    if property_row and getattr(property_row, "manager_id", None):
+        notification_service.send_notification(
+            db,
+            NotificationCreate(
+                user_id=property_row.manager_id,
+                user_type="property_manager",         # ✅ required (NOT NULL)
+                title=title,
+                message=message,
+                channel="inapp",
+            ),
+        )
+
     return {
         "id": req.id,
-        "title": req.title,
         "description": req.description,
-        "status": req.status,
+        "status": getattr(req.status, "name", None),
         "created_at": req.created_at.isoformat() if req.created_at else None,
     }
 
@@ -226,5 +275,4 @@ def tenant_profile(current: models.Tenant = Depends(get_current_tenant)) -> Dict
 
 @router.post("/pay")
 def pay_this_month(current: models.Tenant = Depends(get_current_tenant)) -> Dict[str, Any]:
-    # Stub: integrate with your PSP here.
     return {"message": "Payment initiation stubbed. Integrate with your PSP here."}
