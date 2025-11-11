@@ -89,3 +89,33 @@ def delete_lease(db: Session, lease_id: int) -> bool:
     db.delete(lease)
     db.commit()
     return True
+
+def list_leases_for_tenant(db: Session, tenant_id: int):
+    return (
+        db.query(models.Lease)
+        .filter(models.Lease.tenant_id == tenant_id)
+        .order_by(models.Lease.start_date.desc())
+        .all()
+    )
+
+def list_leases_for_landlord(db: Session, landlord_id: int):
+    # leases where unit.property.landlord_id = landlord_id
+    return (
+        db.query(models.Lease)
+        .join(models.Unit, models.Unit.id == models.Lease.unit_id)
+        .join(models.Property, models.Property.id == models.Unit.property_id)
+        .filter(models.Property.landlord_id == landlord_id)
+        .order_by(models.Lease.start_date.desc())
+        .all()
+    )
+
+def list_leases_for_manager(db: Session, manager_id: int):
+    # leases where unit.property.manager_id = manager_id
+    return (
+        db.query(models.Lease)
+        .join(models.Unit, models.Unit.id == models.Lease.unit_id)
+        .join(models.Property, models.Property.id == models.Unit.property_id)
+        .filter(models.Property.manager_id == manager_id)
+        .order_by(models.Lease.start_date.desc())
+        .all()
+    )

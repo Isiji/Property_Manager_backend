@@ -1,48 +1,32 @@
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime
 from typing import Optional
+from datetime import datetime
 
-# -----------------------------
-# Base
-# -----------------------------
-class MaintenanceRequestBase(BaseModel):
+class MaintenanceStatusOut(BaseModel):
+    id: int
+    name: str
+    class Config:
+        model_config = ConfigDict(from_attributes=True)
+
+# existing request models (keep yours; below is a minimal shape)
+class MaintenanceRequestCreate(BaseModel):
     tenant_id: int
     unit_id: int
     description: str
     status_id: int
 
-# -----------------------------
-# Create / Update
-# -----------------------------
-class MaintenanceRequestCreate(MaintenanceRequestBase):
-    pass
-
 class MaintenanceRequestUpdate(BaseModel):
     description: Optional[str] = None
     status_id: Optional[int] = None
 
-# -----------------------------
-# Output
-# -----------------------------
-class MaintenanceRequestOut(MaintenanceRequestBase):
+class MaintenanceRequestOut(BaseModel):
     id: int
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        model_config = ConfigDict(from_attributes=True)
-
-# -----------------------------
-# Status
-# -----------------------------
-class MaintenanceStatusBase(BaseModel):
-    name: str
-
-class MaintenanceStatusCreate(MaintenanceStatusBase):
-    pass
-
-class MaintenanceStatusOut(MaintenanceStatusBase):
-    id: int
+    tenant_id: int
+    unit_id: int
+    description: str
+    status_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         model_config = ConfigDict(from_attributes=True)
