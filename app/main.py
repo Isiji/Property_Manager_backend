@@ -24,7 +24,6 @@ from app.routers import (
     webhooks_daraja,
     reports_property_status_router,
     payment_receipts_router,
-    leases_me_router,
 
 )
 from app.services import reminder_service  # import the reminder scheduler
@@ -94,7 +93,6 @@ app.include_router(payments_mpesa.router)
 app.include_router(webhooks_daraja.router)
 app.include_router(reports_property_status_router.router)
 app.include_router(payment_receipts_router.router) 
-app.include_router(leases_me_router.router)
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()

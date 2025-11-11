@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-from io import BytesIO
+from datetime import datetime, date
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
@@ -12,6 +12,8 @@ from app.crud import lease_crud
 from app import models
 
 # PDF (ReportLab)
+from io import BytesIO
+from fastapi import Response
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
@@ -54,7 +56,47 @@ def delete_lease(lease_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-# ---------- NEW: End Lease ----------
+# ---------- NEW: Tenant's active lease ----------
+@router.get("/me", response_model=Optional[LeaseOut])
+def my_active_lease(
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    """
+    Returns the current tenant's active lease or null.
+    Avoids 404/422 so the frontend can just check for null.
+    """
+    if current.get("role") != "tenant":
+        raise HTTPException(status_code=403, detail="Tenant role required")
+    tenant_id = int(current.get("sub", 0) or 0)
+    if tenant_id <= 0:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    lease: models.Lease | None = (
+        db.query(models.Lease)
+        .filter(models.Lease.tenant_id == tenant_id, models.Lease.active == 1)
+        .order_by(models.Lease.id.desc())
+        .first()
+    )
+    if not lease:
+        return None
+
+    # Ensure date-only to satisfy your LeaseOut schema
+    start_date = lease.start_date.date() if isinstance(lease.start_date, datetime) else lease.start_date
+    end_date = lease.end_date.date() if isinstance(lease.end_date, datetime) and lease.end_date else None
+
+    return LeaseOut(
+        id=lease.id,
+        tenant_id=lease.tenant_id,
+        unit_id=lease.unit_id,
+        start_date=start_date or date.today(),
+        end_date=end_date,
+        rent_amount=float(lease.rent_amount) if lease.rent_amount is not None else None,
+        active=int(lease.active or 0),
+    )
+
+
+# ---------- End Lease ----------
 @router.post("/{lease_id}/end", response_model=dict)
 def end_lease(lease_id: int, payload: dict, db: Session = Depends(get_db)):
     """
@@ -65,10 +107,7 @@ def end_lease(lease_id: int, payload: dict, db: Session = Depends(get_db)):
     """
     end_date_str = payload.get("end_date")
     try:
-        end_date = (
-            datetime.fromisoformat(end_date_str)
-            if end_date_str else datetime.utcnow()
-        )
+        end_date = datetime.fromisoformat(end_date_str) if end_date_str else datetime.utcnow()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid end_date format")
 
@@ -78,7 +117,7 @@ def end_lease(lease_id: int, payload: dict, db: Session = Depends(get_db)):
     return {"ok": True, "lease_id": lease.id, "ended": lease.end_date.isoformat()}
 
 
-# ---------- NEW: Lease PDF ----------
+# ---------- Lease PDF ----------
 @router.get("/{lease_id}.pdf")
 def lease_pdf(
     lease_id: int,
@@ -101,7 +140,7 @@ def lease_pdf(
     if not tenant or not unit or not prop or not landlord:
         raise HTTPException(status_code=400, detail="Related data missing")
 
-    # --- AuthZ ---
+    # AuthZ
     role = current.get("role")
     sub = int(current.get("sub", 0) or 0)
     if role == "tenant":
@@ -112,7 +151,7 @@ def lease_pdf(
             raise HTTPException(status_code=403, detail="Forbidden")
     # admin/manager allowed
 
-    # --- Build PDF ---
+    # Build PDF
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
