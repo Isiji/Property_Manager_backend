@@ -217,3 +217,10 @@ def list_my_requests(
         q = q.filter(models.MaintenanceRequest.created_at <= end_date)
 
     return q.order_by(models.MaintenanceRequest.created_at.desc().nullslast()).all()
+
+# List all maintenance statuses (e.g., open, in_progress, resolved)
+@router.get("/status", tags=["Maintenance Requests"])
+@router.get("/status/", tags=["Maintenance Requests"])
+def list_statuses(db: Session = Depends(get_db)) -> List[dict]:
+    rows = db.query(models.MaintenanceStatus).order_by(models.MaintenanceStatus.id).all()
+    return [{"id": r.id, "name": r.name} for r in rows]
