@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy import func
 
 from .. import models
 from app.schemas import maintenance_schema as schemas
-from ..dependencies import get_db
+from ..dependencies import get_db, get_current_user
+
+
 
 router = APIRouter(prefix="/maintenance", tags=["Maintenance Requests"])
 
@@ -163,3 +165,55 @@ def average_resolution_time(
 
     avg_days = query.scalar()
     return {"average_resolution_days": round(avg_days, 2) if avg_days else None}
+
+@router.get("/my", response_model=List[schemas.MaintenanceRequestOut], tags=["Maintenance"])
+def list_my_requests(
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+    status_id: Optional[int] = None,
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+):
+    """
+    tenant  -> tickets where tenant_id = me
+    landlord-> tickets for units inside my properties
+    manager -> tickets for units inside properties I manage
+    admin   -> all
+    """
+    role = (current.get("role") or "").lower()
+    me = int(current.get("sub") or 0)
+    if me <= 0:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    q = db.query(models.MaintenanceRequest).options(
+        joinedload(models.MaintenanceRequest.status),
+        joinedload(models.MaintenanceRequest.unit).joinedload(models.Unit.property),
+    )
+
+    if role == "tenant":
+        q = q.filter(models.MaintenanceRequest.tenant_id == me)
+    elif role == "landlord":
+        q = (
+            q.join(models.Unit, models.Unit.id == models.MaintenanceRequest.unit_id)
+             .join(models.Property, models.Property.id == models.Unit.property_id)
+             .filter(models.Property.landlord_id == me)
+        )
+    elif role == "property_manager":
+        q = (
+            q.join(models.Unit, models.Unit.id == models.MaintenanceRequest.unit_id)
+             .join(models.Property, models.Property.id == models.Unit.property_id)
+             .filter(models.Property.manager_id == me)
+        )
+    elif role == "admin":
+        pass
+    else:
+        q = q.filter(False)
+
+    if status_id:
+        q = q.filter(models.MaintenanceRequest.status_id == status_id)
+    if start_date:
+        q = q.filter(models.MaintenanceRequest.created_at >= start_date)
+    if end_date:
+        q = q.filter(models.MaintenanceRequest.created_at <= end_date)
+
+    return q.order_by(models.MaintenanceRequest.created_at.desc().nullslast()).all()
