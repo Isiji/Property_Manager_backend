@@ -1,28 +1,57 @@
-# app/utils/phone_utils.py
 import re
+from typing import Optional
 
-def normalize_ke_phone(phone: str) -> str:
+def normalize_ke_phone(raw: str) -> Optional[str]:
     """
-    Normalize Kenyan phone numbers to E.164-like +2547XXXXXXXX.
-    Accepts formats like: 0712345678, 712345678, +254712345678, 254712345678.
-    Leaves other countries mostly untouched (simple heuristic).
+    Normalize Kenyan mobile numbers to E.164 format: +254XXXXXXXXX (9 digits after 254)
+
+    Accepts:
+      - 07XXXXXXXX / 01XXXXXXXX
+      - 7XXXXXXXX / 1XXXXXXXX
+      - 2547XXXXXXXX / 2541XXXXXXXX
+      - +2547XXXXXXXX / +2541XXXXXXXX
+      - With spaces, hyphens, parentheses
+
+    Returns:
+      - "+2547XXXXXXXX" or "+2541XXXXXXXX" if valid
+      - None if invalid
     """
-    if not phone:
-        return phone
+    if raw is None:
+        return None
 
-    p = re.sub(r"\D+", "", phone)  # strip non-digits
+    s = str(raw).strip()
+    if not s:
+        return None
 
-    # If it already has a +, keep it (after removing spaces):
-    if phone.strip().startswith("+"):
-        return "+" + p
+    # Remove spaces, hyphens, parentheses, etc.
+    s = re.sub(r"[^\d+]", "", s)
 
-    # Kenyan patterns:
-    if p.startswith("254") and len(p) == 12 and p[3] == "7":
-        return f"+{p}"
-    if p.startswith("0") and len(p) == 10 and p[1] == "7":
-        return "+254" + p[1:]
-    if len(p) == 9 and p[0] == "7":
-        return "+254" + p  # e.g. 712345678
+    # Keep only one leading '+', if any
+    if s.count("+") > 1:
+        return None
+    if "+" in s and not s.startswith("+"):
+        return None
 
-    # fallback: just slap + if it had no +
-    return "+" + p if not phone.startswith("+") else phone
+    # Strip leading '+'
+    if s.startswith("+"):
+        s = s[1:]
+
+    # Now s should be digits only
+    if not s.isdigit():
+        return None
+
+    # Handle common Kenyan patterns
+    # 07XXXXXXXX or 01XXXXXXXX (10 digits, starts with 0)
+    if len(s) == 10 and s.startswith("0") and s[1] in ("7", "1"):
+        return "+254" + s[1:]  # drop leading 0
+
+    # 7XXXXXXXX or 1XXXXXXXX (9 digits)
+    if len(s) == 9 and s[0] in ("7", "1"):
+        return "+254" + s
+
+    # 2547XXXXXXXX or 2541XXXXXXXX (12 digits)
+    if len(s) == 12 and s.startswith("254") and s[3] in ("7", "1"):
+        return "+" + s
+
+    # Anything else is not a valid Kenyan mobile number format
+    return None

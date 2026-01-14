@@ -1,50 +1,37 @@
+# app/routers/auth_router.py
 from datetime import date
-
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.auth.password_utils import hash_password, verify_password
+from app.auth.jwt_utils import create_access_token
+from app.auth.dependencies import get_db
 from app.schemas.auth_schemas import RegisterUser, LoginUser
-from app.auth.utils import (
-    hash_password,
-    verify_password,
-    create_access_token,
-    SECRET_KEY,
-    ALGORITHM,
-)
 from app.utils.phone_utils import normalize_ke_phone
 
-# NOTE: adjust these imports to your actual model module paths.
 from app.models.user_models import Landlord, PropertyManager, Tenant, Admin
 from app.models.property_models import Property, Unit, Lease
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------
+def clean_email(email: str | None) -> str | None:
+    e = (email or "").strip().lower()
+    return e or None
 
+def clean_phone(phone: str | None) -> str | None:
+    """
+    Normalize Kenyan phone numbers to a single format using normalize_ke_phone,
+    supporting 07..., 01..., 254..., +254..., and with spaces/dashes.
+    """
+    if not phone:
+        return None
+    return normalize_ke_phone(phone)
 
-def _clean_identity(email: str | None, phone: str | None) -> tuple[str | None, str | None]:
-    """
-    - Lowercase + trim email
-    - Normalize phone to +2547XXXXXXX style
-    """
-    email_clean = (email or "").strip().lower() or None
-    phone_clean = normalize_ke_phone(phone or "") if phone else None
-    return email_clean, phone_clean
-
-
-def _exists_by_email_or_phone(db: Session, model, email: str | None, phone: str | None) -> bool:
-    """
-    Check if any row in `model` already uses this email or phone.
-    """
-    q = db.query(model.id)
+def exists_by_email_or_phone(db: Session, model, email: str | None, phone: str | None) -> bool:
     conds = []
     if email:
         conds.append(model.email == email)
@@ -52,55 +39,42 @@ def _exists_by_email_or_phone(db: Session, model, email: str | None, phone: str 
         conds.append(model.phone == phone)
     if not conds:
         return False
-    return db.query(q.filter(or_(*conds)).exists()).scalar()
+    return db.query(db.query(model.id).filter(or_(*conds)).exists()).scalar()
 
-
-def get_current_token(token: str = Depends(oauth2_scheme)) -> dict:
-    """
-    Decode JWT from Authorization: Bearer <token> header.
-    Uses SECRET_KEY and ALGORITHM from app.auth.utils.
-    """
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        # We expect "sub" (user id) and "role" in payload
-        if "sub" not in payload or "role" not in payload:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-        return payload
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-        )
-
-
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------
 # Routes
-# ---------------------------------------------------------------------------
-
-
+# ------------------------------------------------------------
 @router.post("/register")
 def register_user(data: RegisterUser, db: Session = Depends(get_db)):
     """
-    Register any role. For tenants:
-      - property_code + (unit_number preferred OR unit_id)
-      - Creates active lease and marks unit occupied.
+    Register any role.
 
-    Returns clean 409 errors for duplicate email/phone instead of 500.
+    Tenants require:
+      - property_code
+      - unit_number (preferred) OR unit_id
+      - password is OPTIONAL for now (because you want passwordless tenant login for now)
+
+    Non-tenant roles:
+      - password REQUIRED
     """
-    print("🟢 Received registration data:", data.dict())
-
-    # Password requirement for non-tenants
-    if data.role != "tenant" and not data.password:
-        raise HTTPException(status_code=400, detail="Password is required for this role")
-
     try:
-        email, phone = _clean_identity(data.email, data.phone)
+        email = clean_email(data.email)
+        phone = clean_phone(data.phone)
 
-        # -------------------------------------------------------------------
-        # LANDLORD
-        # -------------------------------------------------------------------
-        if data.role == "landlord":
-            if _exists_by_email_or_phone(db, Landlord, email, phone):
+        if not phone:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format."
+            )
+
+        role = (data.role or "").strip().lower()
+
+        # ---------------- LANDLORD ----------------
+        if role == "landlord":
+            if not data.password:
+                raise HTTPException(status_code=400, detail="Password is required for landlord")
+
+            if exists_by_email_or_phone(db, Landlord, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for a landlord")
 
             user = Landlord(
@@ -113,14 +87,14 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.add(user)
             db.commit()
             db.refresh(user)
-            print(f"✅ Landlord registered (ID={user.id})")
             return {"message": "Landlord registered successfully", "id": user.id}
 
-        # -------------------------------------------------------------------
-        # MANAGER
-        # -------------------------------------------------------------------
-        if data.role == "manager":
-            if _exists_by_email_or_phone(db, PropertyManager, email, phone):
+        # ---------------- MANAGER ----------------
+        if role == "manager":
+            if not data.password:
+                raise HTTPException(status_code=400, detail="Password is required for manager")
+
+            if exists_by_email_or_phone(db, PropertyManager, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for a manager")
 
             user = PropertyManager(
@@ -133,14 +107,14 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.add(user)
             db.commit()
             db.refresh(user)
-            print(f"✅ Manager registered (ID={user.id})")
             return {"message": "Manager registered successfully", "id": user.id}
 
-        # -------------------------------------------------------------------
-        # ADMIN
-        # -------------------------------------------------------------------
-        if data.role == "admin":
-            if _exists_by_email_or_phone(db, Admin, email, phone):
+        # ---------------- ADMIN ----------------
+        if role == "admin":
+            if not data.password:
+                raise HTTPException(status_code=400, detail="Password is required for admin")
+
+            if exists_by_email_or_phone(db, Admin, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for an admin")
 
             user = Admin(
@@ -153,34 +127,37 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.add(user)
             db.commit()
             db.refresh(user)
-            print(f"✅ Admin registered (ID={user.id})")
             return {"message": "Admin registered successfully", "id": user.id}
 
-        # -------------------------------------------------------------------
-        # TENANT
-        # -------------------------------------------------------------------
-        if data.role == "tenant":
-            # property + (unit_number or unit_id) required
+        # ---------------- TENANT ----------------
+        if role == "tenant":
             if not data.property_code or (data.unit_number is None and data.unit_id is None):
                 raise HTTPException(
                     status_code=400,
                     detail="Property code and unit (number or id) are required for tenant registration",
                 )
 
-            if _exists_by_email_or_phone(db, Tenant, email, phone):
+            if exists_by_email_or_phone(db, Tenant, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for a tenant")
 
-            prop = db.query(Property).filter(Property.property_code == data.property_code).first()
+            # ✅ FIX 1: property_code match must be case-insensitive + trimmed
+            prop_code = (data.property_code or "").strip()
+            prop = (
+                db.query(Property)
+                .filter(func.upper(func.trim(Property.property_code)) == func.upper(func.trim(prop_code)))
+                .first()
+            )
             if not prop:
                 raise HTTPException(status_code=404, detail="Invalid property code")
 
-            # Resolve unit: prefer unit_number if provided
+            # ✅ FIX 2: Resolve unit by number (preferred), case-insensitive + trimmed
             if data.unit_number:
+                unit_no = (data.unit_number or "").strip()
                 unit = (
                     db.query(Unit)
                     .filter(
                         Unit.property_id == prop.id,
-                        func.lower(func.trim(Unit.number)) == func.lower(func.trim(data.unit_number)),
+                        func.lower(func.trim(Unit.number)) == func.lower(func.trim(unit_no)),
                     )
                     .first()
                 )
@@ -198,24 +175,25 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 if not unit:
                     raise HTTPException(status_code=404, detail="Unit not found for this property")
 
-            # prevent double occupancy
+            # block if occupied
             if int(getattr(unit, "occupied", 0) or 0) == 1:
                 raise HTTPException(status_code=409, detail="Unit already occupied")
 
-            # create tenant
+            # Tenant password is OPTIONAL for now
+            tenant_password = hash_password(data.password) if data.password else None
+
             user = Tenant(
                 name=data.name.strip(),
                 phone=phone,
                 email=email,
                 property_id=prop.id,
                 unit_id=unit.id,
-                password=hash_password(data.password) if data.password else None,
+                password=tenant_password,
                 id_number=data.id_number,
             )
             db.add(user)
-            db.flush()  # get tenant id
+            db.flush()  # get user.id without committing yet
 
-            # create active lease + mark unit occupied
             rent_amount = float(getattr(unit, "rent_amount", 0) or 0)
             lease = Lease(
                 tenant_id=user.id,
@@ -232,7 +210,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.refresh(user)
             db.refresh(lease)
 
-            print(f"✅ Tenant registered (tenant_id={user.id}, lease_id={lease.id}, unit_id={unit.id})")
             return {
                 "message": "Tenant registered successfully",
                 "id": user.id,
@@ -241,7 +218,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 "property_id": prop.id,
             }
 
-        # Unknown role
         raise HTTPException(status_code=400, detail="Invalid role")
 
     except HTTPException:
@@ -249,60 +225,19 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         db.rollback()
-        print(f"💥 Registration error: {e}")
-        msg = str(e)
-        if "UniqueViolation" in msg or "duplicate key value" in msg:
-            # fallback if DB error slipped through pre-check
-            raise HTTPException(status_code=409, detail="Email or phone already registered")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/login")
 def login_user(data: LoginUser, db: Session = Depends(get_db)):
     """
-    Role-based login.
-    - Normalizes phone before lookup.
-    - Non-tenant roles must have valid password.
+    Role-based login:
+    - phone is normalized before lookup (supports 07/01 and 254/+254)
+    - Landlord/Manager/Admin REQUIRE password
+    - Tenant login is PASSWORDLESS for now (phone + role only)
+      (Later you should replace this with OTP to be safe)
     """
-    print("🟢 Login request:", data.dict())
-
-    model_map = {
-        "landlord": Landlord,
-        "manager": PropertyManager,
-        "tenant": Tenant,
-        "admin": Admin,
-    }
-    model = model_map.get(data.role)
-    if not model:
-        raise HTTPException(status_code=400, detail="Invalid role")
-
-    _, phone = _clean_identity(None, data.phone)
-    user = db.query(model).filter(model.phone == phone).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if data.role != "tenant":
-        if not data.password or not verify_password(data.password, user.password):
-            raise HTTPException(status_code=401, detail="Invalid password")
-
-    payload = {"sub": str(user.id), "role": data.role}
-    token = create_access_token(payload)
-    print(f"✅ Login success for {data.role} (ID={user.id})")
-    return {"access_token": token, "token_type": "bearer", "id": user.id, "role": data.role}
-
-
-@router.get("/profile")
-def my_profile(
-    db: Session = Depends(get_db),
-    token: dict = Depends(get_current_token),
-):
-    """
-    Simple profile endpoint used by the Flutter frontend.
-    Reads user id + role from JWT.
-    """
-    role = token.get("role")
-    sub = token.get("sub")
-
+    role = (data.role or "").strip().lower()
     model_map = {
         "landlord": Landlord,
         "manager": PropertyManager,
@@ -311,17 +246,30 @@ def my_profile(
     }
     model = model_map.get(role)
     if not model:
-        raise HTTPException(status_code=400, detail="Invalid role in token")
+        raise HTTPException(status_code=400, detail="Invalid role")
 
-    row = db.query(model).filter(model.id == int(sub)).first()
-    if not row:
+    phone = clean_phone(data.phone)
+    if not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format."
+        )
+
+    user = db.query(model).filter(model.phone == phone).first()
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return {
-        "id": row.id,
-        "name": getattr(row, "name", None),
-        "phone": getattr(row, "phone", None),
-        "email": getattr(row, "email", None),
-        "role": role,
-        "id_number": getattr(row, "id_number", None),
-    }
+    # Tenant passwordless login (temporary)
+    if role == "tenant":
+        token = create_access_token({"sub": str(user.id), "role": role})
+        return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
+
+    # Non-tenant roles must verify password
+    if not getattr(user, "password", None):
+        raise HTTPException(status_code=401, detail="Account has no password set")
+
+    if not data.password or not verify_password(data.password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    token = create_access_token({"sub": str(user.id), "role": role})
+    return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
