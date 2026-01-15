@@ -12,14 +12,6 @@ router = APIRouter(
     tags=["Landlords"],
 )
 
-# -- Policies -------------------------------------------------------------
-# - Create landlord: admin or property_manager
-# - List landlords: admin or property_manager
-# - Get single landlord: admin or property_manager OR the landlord themselves
-# - Update landlord: admin OR the landlord themselves
-# - Delete landlord: admin only
-# ------------------------------------------------------------------------
-
 @router.post(
     "/",
     response_model=LandlordOut,
@@ -45,11 +37,21 @@ def get_landlord(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    # allow: admin, property_manager, or landlord self
     role = current_user.get("role")
+
+    # ✅ allow: admin, property_manager, or landlord self
     if role not in {"admin", "property_manager"}:
-        # must be the same landlord id if role == landlord
-        if not (role == "landlord" and current_user.get("landlord_id") == landlord_id):
+        if role == "landlord":
+            # 🔥 IMPORTANT FIX:
+            # your landlord token contains {sub: "<landlord_id>"} not landlord_id
+            try:
+                token_sub = int(current_user.get("sub"))
+            except Exception:
+                token_sub = None
+
+            if token_sub != landlord_id:
+                raise HTTPException(status_code=403, detail="Not authorized to view this landlord")
+        else:
             raise HTTPException(status_code=403, detail="Not authorized to view this landlord")
 
     landlord = crud.get_landlord(db, landlord_id)
@@ -64,9 +66,16 @@ def update_landlord(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    # allow: admin OR landlord self
     role = current_user.get("role")
-    is_self = role == "landlord" and current_user.get("landlord_id") == landlord_id
+
+    is_self = False
+    if role == "landlord":
+        try:
+            token_sub = int(current_user.get("sub"))
+        except Exception:
+            token_sub = None
+        is_self = token_sub == landlord_id
+
     if not (role == "admin" or is_self):
         raise HTTPException(status_code=403, detail="Not authorized to update this landlord")
 
