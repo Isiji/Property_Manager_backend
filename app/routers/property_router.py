@@ -281,23 +281,3 @@ def assign_manager(property_id: int, payload: AssignManagerPayload, db: Session 
     }
 
 
-@router.get("/{property_id}/property-manager")
-def get_property_manager_for_property(property_id: int, db: Session = Depends(get_db)):
-    prop = db.query(Property).filter(Property.id == property_id).first()
-    if not prop:
-        raise HTTPException(status_code=404, detail="Property not found")
-
-    if not prop.manager_id:
-        return None
-
-    mgr = db.query(PropertyManager).filter(PropertyManager.id == prop.manager_id).first()
-    if not mgr:
-        return None
-
-    return {
-        "id": mgr.id,
-        "name": mgr.name,
-        "phone": mgr.phone,
-        "email": mgr.email,
-        "id_number": mgr.id_number,
-    }
