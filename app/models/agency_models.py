@@ -44,3 +44,25 @@ class PropertyAgentAssignment(Base):
     __table_args__ = (
         UniqueConstraint("property_id", "assignee_user_id", "active", name="uq_property_assignment_active"),
     )
+
+
+class PropertyExternalManagerAssignment(Base):
+    """
+    Assign an EXTERNAL manager org (PropertyManager) to an agency-managed property.
+    This supports: agency assigns already-registered managers as agents.
+    """
+    __tablename__ = "property_external_manager_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    property_id = Column(Integer, ForeignKey("properties.id"), nullable=False, index=True)
+    agent_manager_id = Column(Integer, ForeignKey("property_managers.id"), nullable=False, index=True)
+
+    assigned_by_user_id = Column(Integer, ForeignKey("manager_users.id"), nullable=False, index=True)
+
+    active = Column(Boolean, nullable=False, default=True)
+    assigned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("property_id", "active", name="uq_property_external_assignment_active"),
+    )

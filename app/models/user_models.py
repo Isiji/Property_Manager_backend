@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Column, Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -78,7 +78,7 @@ class ManagerUser(Base):
     # optional role within manager org
     # (keep it simple now: "manager_staff" or "manager_admin")
     staff_role = Column(String, nullable=False, default="manager_staff")
-
+    active = Column(Boolean, nullable=False, default=True)
     manager = relationship("PropertyManager", back_populates="staff")
 
 

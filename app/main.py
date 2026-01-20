@@ -27,6 +27,8 @@ from app.routers import (
     admin_jobs_router,
     admin_seed_router,
     property_manager_router,
+    agency_router,
+    properties_me_router,
 
 )
 from app.services import reminder_service  # import the reminder scheduler
@@ -99,5 +101,7 @@ app.include_router(payment_receipts_router.router)
 app.include_router(admin_jobs_router.router)
 app.include_router(admin_seed_router.router)
 app.include_router(property_manager_router.router)
+app.include_router(agency_router.router)
+app.include_router(properties_me_router.router)
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
