@@ -79,31 +79,52 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             if exists_by_email_or_phone(db, ManagerUser, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for a manager staff")
 
-            # Create org as individual by default (you can later add a separate endpoint to create agencies)
+            manager_type = (data.manager_type or "individual").strip().lower()
+            if manager_type not in ("individual", "agency"):
+                raise HTTPException(status_code=400, detail="manager_type must be 'individual' or 'agency'")
+
+            company_name = (data.company_name or "").strip() or None
+            contact_person = (data.contact_person or "").strip() or None
+            office_phone = (data.office_phone or "").strip() or None
+            office_email = clean_email(data.office_email)
+
+            if manager_type == "agency" and not company_name:
+                raise HTTPException(status_code=400, detail="company_name is required when manager_type='agency'")
+
+            # Org display rule:
+            # - agency: show company_name (fallback name)
+            # - individual: show name
+            org_name = company_name if (manager_type == "agency" and company_name) else data.name.strip()
+
             org = PropertyManager(
-                name=data.name.strip(),
-                phone=phone,
-                email=email,
-                password=None,  # moved to staff
+                name=org_name,
+                phone=phone,          # keep as a main contact phone (can be staff phone for now)
+                email=email,          # can be staff email for now
+                password=None,        # moved to ManagerUser
                 id_number=data.id_number,
-                type="individual",
-                company_name=None,
-                contact_person=None,
-                office_phone=None,
-                office_email=None,
+
+                type=manager_type,
+                company_name=company_name,
+                contact_person=contact_person if manager_type == "agency" else None,
+                office_phone=office_phone if manager_type == "agency" else None,
+                office_email=office_email if manager_type == "agency" else None,
                 logo_url=None,
             )
             db.add(org)
             db.flush()  # get org.id
 
+            # First staff = admin
+            staff_display_name = contact_person if (manager_type == "agency" and contact_person) else data.name.strip()
+
             staff = ManagerUser(
                 manager_id=org.id,
-                name=data.name.strip(),
+                name=staff_display_name,
                 phone=phone,
                 email=email,
                 password_hash=hash_password(data.password),
                 id_number=data.id_number,
                 staff_role="manager_admin",
+                active=True,
             )
             db.add(staff)
 
@@ -114,7 +135,9 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             return {
                 "message": "Manager registered successfully",
                 "manager_id": org.id,
-                "staff_id": staff.id
+                "staff_id": staff.id,
+                "manager_type": org.type,
+                "manager_name": org.company_name or org.name,
             }
 
         # ---------------- ADMIN ----------------
@@ -246,7 +269,7 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
 
     # -------- MANAGER login via ManagerUser --------
     if role == "manager":
-        staff = db.query(ManagerUser).filter(ManagerUser.phone == phone).first()
+        staff = db.query(ManagerUser).filter(ManagerUser.phone == phone, ManagerUser.active == True).first()  # noqa
         if not staff:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -263,8 +286,8 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
         return {
             "access_token": token,
             "token_type": "bearer",
-            "id": staff.id,                 # staff id
-            "manager_id": staff.manager_id, # org id
+            "id": staff.id,
+            "manager_id": staff.manager_id,
             "role": "manager",
         }
 
