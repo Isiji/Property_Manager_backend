@@ -6,7 +6,6 @@ from app.routers import (
     bulk_upload,
     landlord_routers,
     tenant_routers,
-    property_router,
     unit_router,
     lease_router,
     payment_router,
@@ -29,6 +28,7 @@ from app.routers import (
     property_manager_router,
     agency_router,
     properties_me_router,
+    property_router,
 
 )
 from app.services import reminder_service  # import the reminder scheduler
@@ -81,6 +81,7 @@ app.include_router(landlord_routers.router)
 app.include_router(tenant_routers.router)
 app.include_router(property_router.router)
 app.include_router(unit_router.router)
+app.include_router(properties_me_router.router)
 app.include_router(bulk_upload.router)
 app.include_router(lease_router.router)
 app.include_router(payment_router.router)

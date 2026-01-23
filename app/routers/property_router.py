@@ -1,17 +1,15 @@
-# app/routers/property_router.py
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session, joinedload
-from pydantic import BaseModel
+from sqlalchemy import func
 from jose import jwt, JWTError
+from pydantic import BaseModel
 
-from app.dependencies import get_db
+from app.auth.dependencies import get_db
 from app.auth.jwt_utils import SECRET_KEY, ALGORITHM
 
 from app.models.property_models import Property, Unit, Lease
 from app.models.user_models import Landlord, PropertyManager
-
-# Agency assignment tables
 from app.models.agency_models import PropertyAgentAssignment, PropertyExternalManagerAssignment
 
 router = APIRouter(prefix="/properties", tags=["Properties"])
@@ -27,7 +25,7 @@ def _decode(creds: HTTPAuthorizationCredentials) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-# ✅ MUST be above /{property_id}
+# ✅ IMPORTANT: /me MUST be above /{property_id}
 @router.get("/me")
 def properties_visible_to_me(
     db: Session = Depends(get_db),
@@ -42,20 +40,11 @@ def properties_visible_to_me(
     C) Properties assigned to my org as an external agent (external assignment)
     """
     payload = _decode(creds)
-
     if payload.get("role") != "manager":
         raise HTTPException(status_code=403, detail="Not a manager session")
 
-    sub = payload.get("sub")
-    manager_id_claim = payload.get("manager_id")
-
-    if not sub:
-        raise HTTPException(status_code=401, detail="Invalid token payload (missing sub)")
-    if manager_id_claim is None:
-        raise HTTPException(status_code=401, detail="Invalid token payload (missing manager_id)")
-
-    staff_id = int(sub)
-    manager_id = int(manager_id_claim)
+    staff_id = int(payload.get("sub"))
+    manager_id = int(payload.get("manager_id"))
 
     # A) org-managed
     q_org = db.query(Property.id).filter(Property.manager_id == manager_id)
@@ -66,7 +55,7 @@ def properties_visible_to_me(
         .join(PropertyAgentAssignment, PropertyAgentAssignment.property_id == Property.id)
         .filter(
             PropertyAgentAssignment.assignee_user_id == staff_id,
-            PropertyAgentAssignment.active == True,  # noqa: E712
+            PropertyAgentAssignment.active == True,  # noqa
         )
     )
 
@@ -76,7 +65,7 @@ def properties_visible_to_me(
         .join(PropertyExternalManagerAssignment, PropertyExternalManagerAssignment.property_id == Property.id)
         .filter(
             PropertyExternalManagerAssignment.agent_manager_id == manager_id,
-            PropertyExternalManagerAssignment.active == True,  # noqa: E712
+            PropertyExternalManagerAssignment.active == True,  # noqa
         )
     )
 
@@ -102,6 +91,9 @@ def properties_visible_to_me(
 # ---- Create ---------------------------------------------------------------
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_property(payload: dict, db: Session = Depends(get_db)):
+    """
+    Expected keys: name, address, landlord_id, (optional) manager_id
+    """
     name = (payload.get("name") or "").strip()
     address = (payload.get("address") or "").strip()
     landlord_id = payload.get("landlord_id")
@@ -133,9 +125,15 @@ def create_property(payload: dict, db: Session = Depends(get_db)):
     }
 
 
+# ---- Read: list by landlord ----------------------------------------------
 @router.get("/landlord/{landlord_id}")
 def properties_by_landlord(landlord_id: int, db: Session = Depends(get_db)):
-    rows = db.query(Property).filter(Property.landlord_id == landlord_id).order_by(Property.id.desc()).all()
+    rows = (
+        db.query(Property)
+        .filter(Property.landlord_id == landlord_id)
+        .order_by(Property.id.desc())
+        .all()
+    )
     return [
         {
             "id": r.id,
@@ -149,22 +147,7 @@ def properties_by_landlord(landlord_id: int, db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/manager/{manager_id}")
-def properties_by_manager(manager_id: int, db: Session = Depends(get_db)):
-    rows = db.query(Property).filter(Property.manager_id == manager_id).order_by(Property.id.desc()).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "address": r.address,
-            "property_code": r.property_code,
-            "landlord_id": r.landlord_id,
-            "manager_id": r.manager_id,
-        }
-        for r in rows
-    ]
-
-
+# ---- Read: assigned property manager --------------------------------------
 @router.get("/{property_id}/property-manager")
 def get_assigned_property_manager(property_id: int, db: Session = Depends(get_db)):
     prop = db.query(Property).filter(Property.id == property_id).first()
@@ -187,12 +170,15 @@ def get_assigned_property_manager(property_id: int, db: Session = Depends(get_db
     }
 
 
+# ---- Read: detailed with units + tenant + lease ---------------------------
 @router.get("/{property_id}/with-units-detailed")
 def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)):
     prop = (
         db.query(Property)
         .options(
-            joinedload(Property.units).joinedload(Unit.lease).joinedload(Lease.tenant),
+            joinedload(Property.units)
+            .joinedload(Unit.lease)
+            .joinedload(Lease.tenant),
             joinedload(Property.landlord),
         )
         .filter(Property.id == property_id)
@@ -255,6 +241,7 @@ def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)
     }
 
 
+# ---- Read: single (basic) -------------------------------------------------
 @router.get("/{property_id}")
 def get_property(property_id: int, db: Session = Depends(get_db)):
     p = db.query(Property).filter(Property.id == property_id).first()
@@ -270,6 +257,7 @@ def get_property(property_id: int, db: Session = Depends(get_db)):
     }
 
 
+# ---- Update ---------------------------------------------------------------
 @router.put("/{property_id}")
 def update_property(property_id: int, payload: dict, db: Session = Depends(get_db)):
     p = db.query(Property).filter(Property.id == property_id).first()
@@ -299,6 +287,7 @@ def update_property(property_id: int, payload: dict, db: Session = Depends(get_d
     }
 
 
+# ---- Delete ---------------------------------------------------------------
 @router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_property(property_id: int, db: Session = Depends(get_db)):
     p = db.query(Property).filter(Property.id == property_id).first()
@@ -311,6 +300,27 @@ def delete_property(property_id: int, db: Session = Depends(get_db)):
 
 class AssignManagerPayload(BaseModel):
     manager_id: int | None = None
+
+
+@router.get("/manager/{manager_id}")
+def properties_by_manager(manager_id: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(Property)
+        .filter(Property.manager_id == manager_id)
+        .order_by(Property.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "address": r.address,
+            "property_code": r.property_code,
+            "landlord_id": r.landlord_id,
+            "manager_id": r.manager_id,
+        }
+        for r in rows
+    ]
 
 
 @router.put("/{property_id}/assign-manager")
