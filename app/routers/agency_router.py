@@ -360,3 +360,137 @@ def assign_property_to_staff(
         "assigned_by_user_id": assignment.assigned_by_user_id,
         "active": bool(assignment.active),
     }
+
+# ---------------------------
+# Assign properties to EXTERNAL manager orgs (linked agents)
+# ---------------------------
+@router.post("/properties/{property_id}/assign-external/{agent_manager_id}", response_model=AssignPropertyOut)
+def assign_property_to_external_manager(
+    property_id: int,
+    agent_manager_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_manager(payload)
+    _require_admin(payload)
+
+    assigned_by_user_id, agency_manager_id = _get_ids(payload)
+
+    # agency org only
+    _require_agency_org(db, agency_manager_id)
+
+    # property must belong to this agency org
+    prop = db.query(Property).filter(Property.id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    if int(getattr(prop, "manager_id", 0) or 0) != agency_manager_id:
+        raise HTTPException(status_code=403, detail="Property is not managed by your agency")
+
+    # agent must be linked and active
+    link = (
+        db.query(AgencyAgentLink)
+        .filter(
+            AgencyAgentLink.agency_manager_id == agency_manager_id,
+            AgencyAgentLink.agent_manager_id == agent_manager_id,
+            AgencyAgentLink.status == "active",
+        )
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=403, detail="That manager is not linked to your agency (or is inactive)")
+
+    # deactivate existing active external assignment for this property (one-active policy)
+    (
+        db.query(PropertyExternalManagerAssignment)
+        .filter(
+            PropertyExternalManagerAssignment.property_id == property_id,
+            PropertyExternalManagerAssignment.active.is_(True),
+        )
+        .update({"active": False}, synchronize_session=False)
+    )
+
+    row = PropertyExternalManagerAssignment(
+        property_id=property_id,
+        agent_manager_id=agent_manager_id,
+        assigned_by_user_id=assigned_by_user_id,
+        active=True,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "id": row.id,
+        "property_id": row.property_id,
+        "assignee_user_id": None,          # keep schema compatibility
+        "assigned_by_user_id": row.assigned_by_user_id,
+        "active": bool(row.active),
+    }
+
+@router.get("/properties/assignments/staff")
+def list_staff_assignments(
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_manager(payload)
+    _require_admin(payload)
+
+    _, manager_id = _get_ids(payload)
+    _require_agency_org(db, manager_id)
+
+    rows = (
+        db.query(PropertyAgentAssignment)
+        .join(Property, Property.id == PropertyAgentAssignment.property_id)
+        .filter(
+            Property.manager_id == manager_id,
+            PropertyAgentAssignment.active.is_(True),
+        )
+        .all()
+    )
+
+    return [
+        {
+            "property_id": r.property_id,
+            "assignee_user_id": r.assignee_user_id,
+            "assigned_by_user_id": r.assigned_by_user_id,
+            "active": bool(r.active),
+            "assigned_at": str(r.assigned_at),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/properties/assignments/external")
+def list_external_assignments(
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_manager(payload)
+    _require_admin(payload)
+
+    _, manager_id = _get_ids(payload)
+    _require_agency_org(db, manager_id)
+
+    rows = (
+        db.query(PropertyExternalManagerAssignment)
+        .join(Property, Property.id == PropertyExternalManagerAssignment.property_id)
+        .filter(
+            Property.manager_id == manager_id,
+            PropertyExternalManagerAssignment.active.is_(True),
+        )
+        .all()
+    )
+
+    return [
+        {
+            "property_id": r.property_id,
+            "agent_manager_id": r.agent_manager_id,
+            "assigned_by_user_id": r.assigned_by_user_id,
+            "active": bool(r.active),
+            "assigned_at": str(r.assigned_at),
+        }
+        for r in rows
+    ]
