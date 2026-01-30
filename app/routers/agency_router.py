@@ -73,11 +73,20 @@ def _require_agency_org(db: Session, manager_id: int) -> PropertyManager:
     return org
 
 
+def _require_property_belongs_to_agency(db: Session, property_id: int, agency_manager_id: int) -> Property:
+    prop = db.query(Property).filter(Property.id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    if int(getattr(prop, "manager_id", 0) or 0) != int(agency_manager_id):
+        raise HTTPException(status_code=403, detail="Property is not managed by your agency")
+    return prop
+
+
 # ---------------------------
 # Staff management
 # ---------------------------
 
-# ✅ CHANGE: allow ALL agency staff to VIEW staff list (no admin required)
+# allow ALL agency staff to view staff list
 @router.get("/staff", response_model=list[ManagerUserOut])
 def list_staff(
     db: Session = Depends(get_db),
@@ -98,7 +107,7 @@ def list_staff(
     return staff
 
 
-# ❗ keep admin-only for create staff
+# admin-only create staff
 @router.post("/staff", response_model=ManagerUserOut)
 def create_staff(
     body: ManagerUserCreate,
@@ -172,7 +181,7 @@ def deactivate_staff(
 
 
 # ---------------------------
-# Link external managers (already registered manager orgs)
+# Link external managers (agents)
 # ---------------------------
 
 @router.post("/agents/link", response_model=LinkAgentOut)
@@ -189,7 +198,6 @@ def link_agent(
     _require_agency_org(db, agency_manager_id)
 
     agent_manager = None
-
     if body.agent_manager_id is not None:
         agent_manager = db.query(PropertyManager).filter(PropertyManager.id == body.agent_manager_id).first()
     elif body.agent_phone:
@@ -239,7 +247,7 @@ def link_agent(
     }
 
 
-# ✅ CHANGE: allow ALL agency staff to VIEW linked agents (no admin required)
+# allow ALL agency staff to view linked agents
 @router.get("/agents", response_model=list[LinkAgentOut])
 def list_linked_agents(
     db: Session = Depends(get_db),
@@ -306,6 +314,7 @@ def unlink_agent(
 # ---------------------------
 # Assign properties to INTERNAL staff users (admin-only)
 # ---------------------------
+
 @router.post("/properties/{property_id}/assign/{assignee_user_id}", response_model=AssignPropertyOut)
 def assign_property_to_staff(
     property_id: int,
@@ -317,26 +326,20 @@ def assign_property_to_staff(
     _require_manager(payload)
     _require_admin(payload)
 
-    assigned_by_user_id, manager_id = _get_ids(payload)
-    _require_agency_org(db, manager_id)
+    assigned_by_user_id, agency_manager_id = _get_ids(payload)
+    _require_agency_org(db, agency_manager_id)
 
-    prop = db.query(Property).filter(Property.id == property_id).first()
-    if not prop:
-        raise HTTPException(status_code=404, detail="Property not found")
-
-    if int(getattr(prop, "manager_id", 0) or 0) != manager_id:
-        raise HTTPException(status_code=403, detail="You can only assign properties managed by your agency")
+    _require_property_belongs_to_agency(db, property_id, agency_manager_id)
 
     assignee = db.query(ManagerUser).filter(ManagerUser.id == assignee_user_id).first()
     if not assignee:
         raise HTTPException(status_code=404, detail="Assignee staff not found")
-
-    if assignee.manager_id != manager_id:
+    if assignee.manager_id != agency_manager_id:
         raise HTTPException(status_code=403, detail="Assignee must be a staff member under your agency")
-
     if not bool(getattr(assignee, "active", True)):
         raise HTTPException(status_code=400, detail="Assignee is inactive")
 
+    # one-active policy per property
     (
         db.query(PropertyAgentAssignment)
         .filter(PropertyAgentAssignment.property_id == property_id, PropertyAgentAssignment.active.is_(True))
@@ -361,9 +364,54 @@ def assign_property_to_staff(
         "active": bool(assignment.active),
     }
 
+
+@router.patch("/properties/{property_id}/unassign-staff")
+def unassign_property_from_staff(
+    property_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    """
+    Unassign the currently active INTERNAL staff assignment for this property.
+    Admin-only. Property must belong to this agency.
+    """
+    payload = _decode(creds)
+    _require_manager(payload)
+    _require_admin(payload)
+
+    _, agency_manager_id = _get_ids(payload)
+    _require_agency_org(db, agency_manager_id)
+
+    _require_property_belongs_to_agency(db, property_id, agency_manager_id)
+
+    row = (
+        db.query(PropertyAgentAssignment)
+        .filter(
+            PropertyAgentAssignment.property_id == property_id,
+            PropertyAgentAssignment.active.is_(True),
+        )
+        .order_by(PropertyAgentAssignment.id.desc())
+        .first()
+    )
+    if not row:
+        # returning 200 is also okay, but keeping it strict helps you notice mistakes
+        raise HTTPException(status_code=404, detail="No active staff assignment for this property")
+
+    row.active = False
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "property_id": row.property_id,
+        "assignee_user_id": row.assignee_user_id,
+        "active": bool(row.active),
+    }
+
+
 # ---------------------------
 # Assign properties to EXTERNAL manager orgs (linked agents)
 # ---------------------------
+
 @router.post("/properties/{property_id}/assign-external/{agent_manager_id}", response_model=AssignPropertyOut)
 def assign_property_to_external_manager(
     property_id: int,
@@ -376,16 +424,9 @@ def assign_property_to_external_manager(
     _require_admin(payload)
 
     assigned_by_user_id, agency_manager_id = _get_ids(payload)
-
-    # agency org only
     _require_agency_org(db, agency_manager_id)
 
-    # property must belong to this agency org
-    prop = db.query(Property).filter(Property.id == property_id).first()
-    if not prop:
-        raise HTTPException(status_code=404, detail="Property not found")
-    if int(getattr(prop, "manager_id", 0) or 0) != agency_manager_id:
-        raise HTTPException(status_code=403, detail="Property is not managed by your agency")
+    _require_property_belongs_to_agency(db, property_id, agency_manager_id)
 
     # agent must be linked and active
     link = (
@@ -400,7 +441,7 @@ def assign_property_to_external_manager(
     if not link:
         raise HTTPException(status_code=403, detail="That manager is not linked to your agency (or is inactive)")
 
-    # deactivate existing active external assignment for this property (one-active policy)
+    # one-active policy per property
     (
         db.query(PropertyExternalManagerAssignment)
         .filter(
@@ -423,12 +464,59 @@ def assign_property_to_external_manager(
     return {
         "id": row.id,
         "property_id": row.property_id,
-        "assignee_user_id": None,          # keep schema compatibility
+        "assignee_user_id": None,  # keep schema compatibility
         "assigned_by_user_id": row.assigned_by_user_id,
         "active": bool(row.active),
     }
 
-@router.get("/properties/assignments/staff")
+
+@router.patch("/properties/{property_id}/unassign-external")
+def unassign_property_from_external_agent(
+    property_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    """
+    Unassign the currently active EXTERNAL agent assignment for this property.
+    Admin-only. Property must belong to this agency.
+    """
+    payload = _decode(creds)
+    _require_manager(payload)
+    _require_admin(payload)
+
+    _, agency_manager_id = _get_ids(payload)
+    _require_agency_org(db, agency_manager_id)
+
+    _require_property_belongs_to_agency(db, property_id, agency_manager_id)
+
+    row = (
+        db.query(PropertyExternalManagerAssignment)
+        .filter(
+            PropertyExternalManagerAssignment.property_id == property_id,
+            PropertyExternalManagerAssignment.active.is_(True),
+        )
+        .order_by(PropertyExternalManagerAssignment.id.desc())
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="No active external assignment for this property")
+
+    row.active = False
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "property_id": row.property_id,
+        "agent_manager_id": row.agent_manager_id,
+        "active": bool(row.active),
+    }
+
+
+# ---------------------------
+# Assignments list endpoints (for UI display)
+# ---------------------------
+
+@router.get("/assignments/staff")
 def list_staff_assignments(
     db: Session = Depends(get_db),
     creds: HTTPAuthorizationCredentials = Depends(bearer),
@@ -437,21 +525,23 @@ def list_staff_assignments(
     _require_manager(payload)
     _require_admin(payload)
 
-    _, manager_id = _get_ids(payload)
-    _require_agency_org(db, manager_id)
+    _, agency_manager_id = _get_ids(payload)
+    _require_agency_org(db, agency_manager_id)
 
     rows = (
         db.query(PropertyAgentAssignment)
         .join(Property, Property.id == PropertyAgentAssignment.property_id)
         .filter(
-            Property.manager_id == manager_id,
+            Property.manager_id == agency_manager_id,
             PropertyAgentAssignment.active.is_(True),
         )
+        .order_by(PropertyAgentAssignment.id.desc())
         .all()
     )
 
     return [
         {
+            "id": r.id,
             "property_id": r.property_id,
             "assignee_user_id": r.assignee_user_id,
             "assigned_by_user_id": r.assigned_by_user_id,
@@ -462,7 +552,7 @@ def list_staff_assignments(
     ]
 
 
-@router.get("/properties/assignments/external")
+@router.get("/assignments/external")
 def list_external_assignments(
     db: Session = Depends(get_db),
     creds: HTTPAuthorizationCredentials = Depends(bearer),
@@ -471,21 +561,23 @@ def list_external_assignments(
     _require_manager(payload)
     _require_admin(payload)
 
-    _, manager_id = _get_ids(payload)
-    _require_agency_org(db, manager_id)
+    _, agency_manager_id = _get_ids(payload)
+    _require_agency_org(db, agency_manager_id)
 
     rows = (
         db.query(PropertyExternalManagerAssignment)
         .join(Property, Property.id == PropertyExternalManagerAssignment.property_id)
         .filter(
-            Property.manager_id == manager_id,
+            Property.manager_id == agency_manager_id,
             PropertyExternalManagerAssignment.active.is_(True),
         )
+        .order_by(PropertyExternalManagerAssignment.id.desc())
         .all()
     )
 
     return [
         {
+            "id": r.id,
             "property_id": r.property_id,
             "agent_manager_id": r.agent_manager_id,
             "assigned_by_user_id": r.assigned_by_user_id,
