@@ -371,41 +371,30 @@ def unassign_property_from_staff(
     db: Session = Depends(get_db),
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
-    """
-    Unassign the currently active INTERNAL staff assignment for this property.
-    Admin-only. Property must belong to this agency.
-    """
     payload = _decode(creds)
     _require_manager(payload)
     _require_admin(payload)
 
     _, agency_manager_id = _get_ids(payload)
     _require_agency_org(db, agency_manager_id)
-
     _require_property_belongs_to_agency(db, property_id, agency_manager_id)
 
-    row = (
+    # ✅ Bulk deactivate any active row(s) for safety
+    updated = (
         db.query(PropertyAgentAssignment)
         .filter(
             PropertyAgentAssignment.property_id == property_id,
             PropertyAgentAssignment.active.is_(True),
         )
-        .order_by(PropertyAgentAssignment.id.desc())
-        .first()
+        .update({"active": False}, synchronize_session=False)
     )
-    if not row:
-        # returning 200 is also okay, but keeping it strict helps you notice mistakes
+
+    if updated == 0:
         raise HTTPException(status_code=404, detail="No active staff assignment for this property")
 
-    row.active = False
     db.commit()
-    db.refresh(row)
 
-    return {
-        "property_id": row.property_id,
-        "assignee_user_id": row.assignee_user_id,
-        "active": bool(row.active),
-    }
+    return {"property_id": property_id, "active": False}
 
 
 # ---------------------------
@@ -476,40 +465,29 @@ def unassign_property_from_external_agent(
     db: Session = Depends(get_db),
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
-    """
-    Unassign the currently active EXTERNAL agent assignment for this property.
-    Admin-only. Property must belong to this agency.
-    """
     payload = _decode(creds)
     _require_manager(payload)
     _require_admin(payload)
 
     _, agency_manager_id = _get_ids(payload)
     _require_agency_org(db, agency_manager_id)
-
     _require_property_belongs_to_agency(db, property_id, agency_manager_id)
 
-    row = (
+    updated = (
         db.query(PropertyExternalManagerAssignment)
         .filter(
             PropertyExternalManagerAssignment.property_id == property_id,
             PropertyExternalManagerAssignment.active.is_(True),
         )
-        .order_by(PropertyExternalManagerAssignment.id.desc())
-        .first()
+        .update({"active": False}, synchronize_session=False)
     )
-    if not row:
+
+    if updated == 0:
         raise HTTPException(status_code=404, detail="No active external assignment for this property")
 
-    row.active = False
     db.commit()
-    db.refresh(row)
 
-    return {
-        "property_id": row.property_id,
-        "agent_manager_id": row.agent_manager_id,
-        "active": bool(row.active),
-    }
+    return {"property_id": property_id, "active": False}
 
 
 # ---------------------------

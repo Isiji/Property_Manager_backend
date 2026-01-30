@@ -1,13 +1,11 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, UniqueConstraint, Index
 from sqlalchemy.sql import func
 from app.database import Base
 
 
 class AgencyAgentLink(Base):
     """
-    Links an AGENCY org (property_managers.type='agency') to an already-registered manager org
-    (usually type='individual', but could be another org if you allow).
+    Links an AGENCY org (property_managers.type='agency') to an already-registered manager org.
     """
     __tablename__ = "agency_agent_links"
 
@@ -28,7 +26,9 @@ class PropertyAgentAssignment(Base):
     """
     Assigns a staff user (ManagerUser) to a property for accountability/workload.
 
-    This is separate from property.manager_id (which stays as the org that manages the property).
+    IMPORTANT:
+    We allow history (many rows), but we enforce ONLY ONE ACTIVE assignment per property.
+    That should be done using a PARTIAL UNIQUE INDEX: unique(property_id) WHERE active IS TRUE
     """
     __tablename__ = "property_agent_assignments"
 
@@ -42,14 +42,20 @@ class PropertyAgentAssignment(Base):
     assigned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("property_id", "assignee_user_id", "active", name="uq_property_assignment_active"),
+        # ✅ Only one active row per property, but allow unlimited inactive history.
+        Index(
+            "ux_property_agent_assignment_one_active_per_property",
+            "property_id",
+            unique=True,
+            postgresql_where=(active.is_(True)),
+        ),
     )
 
 
 class PropertyExternalManagerAssignment(Base):
     """
     Assign an EXTERNAL manager org (PropertyManager) to an agency-managed property.
-    This supports: agency assigns already-registered managers as agents.
+    We allow history, but enforce ONLY ONE ACTIVE assignment per property.
     """
     __tablename__ = "property_external_manager_assignments"
 
@@ -64,5 +70,11 @@ class PropertyExternalManagerAssignment(Base):
     assigned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("property_id", "active", name="uq_property_external_assignment_active"),
+        # ✅ Only one active row per property (external), allow history.
+        Index(
+            "ux_property_external_assignment_one_active_per_property",
+            "property_id",
+            unique=True,
+            postgresql_where=(active.is_(True)),
+        ),
     )
