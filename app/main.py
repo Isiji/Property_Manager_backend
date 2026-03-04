@@ -29,6 +29,7 @@ from app.routers import (
     agency_router,
     properties_me_router,
     property_router,
+    admin_dashboard_router,
 
 )
 from app.services import reminder_service  # import the reminder scheduler
@@ -104,5 +105,7 @@ app.include_router(admin_seed_router.router)
 app.include_router(property_manager_router.router)
 app.include_router(agency_router.router)
 app.include_router(properties_me_router.router)
+app.include_router(admin_dashboard_router.router)
+
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
