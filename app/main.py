@@ -2,6 +2,7 @@
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
+
 from app.routers import (
     bulk_upload,
     landlord_routers,
@@ -15,7 +16,6 @@ from app.routers import (
     report_router,
     notification_router,
     auth_router,
-    payout_router,
     bulk_router,
     tenant_portal_router,
     property_units_lookup,
@@ -27,9 +27,11 @@ from app.routers import (
     admin_seed_router,
     property_manager_router,
     agency_router,
-    properties_me_router,
     property_router,
     admin_dashboard_router,
+    payout_router,
+    audit_log_router,
+
 
 )
 from app.services import reminder_service  # import the reminder scheduler
@@ -82,7 +84,6 @@ app.include_router(landlord_routers.router)
 app.include_router(tenant_routers.router)
 app.include_router(property_router.router)
 app.include_router(unit_router.router)
-app.include_router(properties_me_router.router)
 app.include_router(bulk_upload.router)
 app.include_router(lease_router.router)
 app.include_router(payment_router.router)
@@ -104,8 +105,9 @@ app.include_router(admin_jobs_router.router)
 app.include_router(admin_seed_router.router)
 app.include_router(property_manager_router.router)
 app.include_router(agency_router.router)
-app.include_router(properties_me_router.router)
 app.include_router(admin_dashboard_router.router)
+app.include_router(audit_log_router.router)
+
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()

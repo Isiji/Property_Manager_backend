@@ -1,28 +1,55 @@
+# app/routers/property_router.py
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from jose import jwt, JWTError
 from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
 
 from app.auth.dependencies import get_db
 from app.auth.jwt_utils import SECRET_KEY, ALGORITHM
 
 from app.models.property_models import Property, Unit, Lease
 from app.models.user_models import Landlord, PropertyManager
-from app.models.agency_models import PropertyAgentAssignment, PropertyExternalManagerAssignment
+from app.models.agency_models import (
+    PropertyAgentAssignment,
+    PropertyExternalManagerAssignment,
+)
 
 router = APIRouter(prefix="/properties", tags=["Properties"])
 bearer = HTTPBearer(auto_error=False)
 
 
-def _decode(creds: HTTPAuthorizationCredentials) -> dict:
+def _decode(creds: Optional[HTTPAuthorizationCredentials]) -> dict:
     if not creds:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         return jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _require_roles(payload: dict, allowed: set[str]):
+    role = (payload or {}).get("role")
+    if role not in allowed:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+
+def _sub_int(payload: dict) -> int:
+    try:
+        return int((payload or {}).get("sub", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _manager_id_int(payload: dict) -> int:
+    try:
+        return int((payload or {}).get("manager_id", 0) or 0)
+    except Exception:
+        return 0
 
 
 # ✅ IMPORTANT: /me MUST be above /{property_id}
@@ -43,8 +70,10 @@ def properties_visible_to_me(
     if payload.get("role") != "manager":
         raise HTTPException(status_code=403, detail="Not a manager session")
 
-    staff_id = int(payload.get("sub"))
-    manager_id = int(payload.get("manager_id"))
+    staff_id = _sub_int(payload)
+    manager_id = _manager_id_int(payload)
+    if not staff_id or not manager_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
 
     # A) org-managed
     q_org = db.query(Property.id).filter(Property.manager_id == manager_id)
@@ -88,16 +117,47 @@ def properties_visible_to_me(
     ]
 
 
+# ✅ Admin-only: list all properties (frontend admin_properties.dart needs this)
+@router.get("/")
+def list_all_properties_admin(
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_roles(payload, {"admin"})
+
+    rows = db.query(Property).order_by(Property.id.desc()).all()
+    return [
+        {
+            "id": p.id,
+            "name": getattr(p, "name", None),
+            "address": getattr(p, "address", None),
+            "property_code": getattr(p, "property_code", None),
+            "manager_id": getattr(p, "manager_id", None),
+            "landlord_id": getattr(p, "landlord_id", None),
+        }
+        for p in rows
+    ]
+
+
 # ---- Create ---------------------------------------------------------------
 @router.post("/", status_code=status.HTTP_201_CREATED)
-def create_property(payload: dict, db: Session = Depends(get_db)):
+def create_property(
+    payload_in: dict,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
     """
     Expected keys: name, address, landlord_id, (optional) manager_id
+    Allowed: admin or manager(org) (optional policy)
     """
-    name = (payload.get("name") or "").strip()
-    address = (payload.get("address") or "").strip()
-    landlord_id = payload.get("landlord_id")
-    manager_id = payload.get("manager_id")
+    payload = _decode(creds)
+    _require_roles(payload, {"admin", "manager"})
+
+    name = (payload_in.get("name") or "").strip()
+    address = (payload_in.get("address") or "").strip()
+    landlord_id = payload_in.get("landlord_id")
+    manager_id = payload_in.get("manager_id")
 
     if not name or not address or not landlord_id:
         raise HTTPException(status_code=400, detail="name, address, landlord_id required")
@@ -127,10 +187,61 @@ def create_property(payload: dict, db: Session = Depends(get_db)):
 
 # ---- Read: list by landlord ----------------------------------------------
 @router.get("/landlord/{landlord_id}")
-def properties_by_landlord(landlord_id: int, db: Session = Depends(get_db)):
+def properties_by_landlord(
+    landlord_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    role = payload.get("role")
+    sub = _sub_int(payload)
+
+    # landlord can only view own; admin/manager can view
+    if role == "landlord" and sub != landlord_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     rows = (
         db.query(Property)
         .filter(Property.landlord_id == landlord_id)
+        .order_by(Property.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "address": r.address,
+            "property_code": r.property_code,
+            "landlord_id": r.landlord_id,
+            "manager_id": r.manager_id,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/manager/{manager_id}")
+def properties_by_manager(
+    manager_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    role = payload.get("role")
+
+    # admin can view any manager properties
+    if role == "admin":
+        pass
+    # manager can only view own org id
+    elif role == "manager":
+        my_manager_id = _manager_id_int(payload)
+        if my_manager_id != manager_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    rows = (
+        db.query(Property)
+        .filter(Property.manager_id == manager_id)
         .order_by(Property.id.desc())
         .all()
     )
@@ -172,13 +283,21 @@ def get_assigned_property_manager(property_id: int, db: Session = Depends(get_db
 
 # ---- Read: detailed with units + tenant + lease ---------------------------
 @router.get("/{property_id}/with-units-detailed")
-def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)):
+def property_with_units_detailed(
+    property_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    # optional: protect this endpoint
+    payload = _decode(creds)
+    role = payload.get("role")
+    sub = _sub_int(payload)
+    my_manager_id = _manager_id_int(payload)
+
     prop = (
         db.query(Property)
         .options(
-            joinedload(Property.units)
-            .joinedload(Unit.lease)
-            .joinedload(Lease.tenant),
+            joinedload(Property.units).joinedload(Unit.lease).joinedload(Lease.tenant),
             joinedload(Property.landlord),
         )
         .filter(Property.id == property_id)
@@ -186,6 +305,18 @@ def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)
     )
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
+
+    # auth: admin can view; landlord only if owns; manager only if manages
+    if role == "admin":
+        pass
+    elif role == "landlord":
+        if int(prop.landlord_id or 0) != sub:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    elif role == "manager":
+        if int(prop.manager_id or 0) != my_manager_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     landlord_obj = None
     ll = getattr(prop, "landlord", None)
@@ -243,10 +374,32 @@ def property_with_units_detailed(property_id: int, db: Session = Depends(get_db)
 
 # ---- Read: single (basic) -------------------------------------------------
 @router.get("/{property_id}")
-def get_property(property_id: int, db: Session = Depends(get_db)):
+def get_property(
+    property_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    role = payload.get("role")
+    sub = _sub_int(payload)
+    my_manager_id = _manager_id_int(payload)
+
     p = db.query(Property).filter(Property.id == property_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Property not found")
+
+    # auth (basic)
+    if role == "admin":
+        pass
+    elif role == "landlord":
+        if int(p.landlord_id or 0) != sub:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    elif role == "manager":
+        if int(p.manager_id or 0) != my_manager_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     return {
         "id": p.id,
         "name": p.name,
@@ -259,20 +412,33 @@ def get_property(property_id: int, db: Session = Depends(get_db)):
 
 # ---- Update ---------------------------------------------------------------
 @router.put("/{property_id}")
-def update_property(property_id: int, payload: dict, db: Session = Depends(get_db)):
+def update_property(
+    property_id: int,
+    payload_in: dict,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_roles(payload, {"admin", "manager"})
+
     p = db.query(Property).filter(Property.id == property_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    name = payload.get("name")
-    address = payload.get("address")
-    manager_id = payload.get("manager_id")
+    name = payload_in.get("name")
+    address = payload_in.get("address")
+    manager_id = payload_in.get("manager_id")
 
     if name is not None:
         p.name = name.strip() or p.name
     if address is not None:
         p.address = address.strip() or p.address
     if manager_id is not None:
+        # validate manager if set
+        if manager_id is not None:
+            mgr = db.query(PropertyManager).filter(PropertyManager.id == manager_id).first()
+            if not mgr:
+                raise HTTPException(status_code=404, detail="Property Manager not found")
         p.manager_id = manager_id
 
     db.commit()
@@ -289,7 +455,14 @@ def update_property(property_id: int, payload: dict, db: Session = Depends(get_d
 
 # ---- Delete ---------------------------------------------------------------
 @router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_property(property_id: int, db: Session = Depends(get_db)):
+def delete_property(
+    property_id: int,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_roles(payload, {"admin"})
+
     p = db.query(Property).filter(Property.id == property_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Property not found")
@@ -302,39 +475,26 @@ class AssignManagerPayload(BaseModel):
     manager_id: int | None = None
 
 
-@router.get("/manager/{manager_id}")
-def properties_by_manager(manager_id: int, db: Session = Depends(get_db)):
-    rows = (
-        db.query(Property)
-        .filter(Property.manager_id == manager_id)
-        .order_by(Property.id.desc())
-        .all()
-    )
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "address": r.address,
-            "property_code": r.property_code,
-            "landlord_id": r.landlord_id,
-            "manager_id": r.manager_id,
-        }
-        for r in rows
-    ]
-
-
 @router.put("/{property_id}/assign-manager")
-def assign_manager(property_id: int, payload: AssignManagerPayload, db: Session = Depends(get_db)):
+def assign_manager(
+    property_id: int,
+    payload_in: AssignManagerPayload,
+    db: Session = Depends(get_db),
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    payload = _decode(creds)
+    _require_roles(payload, {"admin"})
+
     prop = db.query(Property).filter(Property.id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    if payload.manager_id is not None:
-        mgr = db.query(PropertyManager).filter(PropertyManager.id == payload.manager_id).first()
+    if payload_in.manager_id is not None:
+        mgr = db.query(PropertyManager).filter(PropertyManager.id == payload_in.manager_id).first()
         if not mgr:
             raise HTTPException(status_code=404, detail="Property Manager not found")
 
-    prop.manager_id = payload.manager_id
+    prop.manager_id = payload_in.manager_id
     db.commit()
     db.refresh(prop)
 
