@@ -124,7 +124,7 @@ def list_all_properties_admin(
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
     payload = _decode(creds)
-    _require_roles(payload, {"admin"})
+    _require_roles(payload, {"admin", "super_admin"})
 
     rows = db.query(Property).order_by(Property.id.desc()).all()
     return [
@@ -152,7 +152,7 @@ def create_property(
     Allowed: admin or manager(org) (optional policy)
     """
     payload = _decode(creds)
-    _require_roles(payload, {"admin", "manager"})
+    _require_roles(payload, {"admin", "manager", "super_admin"})
 
     name = (payload_in.get("name") or "").strip()
     address = (payload_in.get("address") or "").strip()
@@ -229,7 +229,7 @@ def properties_by_manager(
     role = payload.get("role")
 
     # admin can view any manager properties
-    if role == "admin":
+    if role == "admin" or "super_admin":
         pass
     # manager can only view own org id
     elif role == "manager":
@@ -307,7 +307,7 @@ def property_with_units_detailed(
         raise HTTPException(status_code=404, detail="Property not found")
 
     # auth: admin can view; landlord only if owns; manager only if manages
-    if role == "admin":
+    if role == "admin" or "super_admin":
         pass
     elif role == "landlord":
         if int(prop.landlord_id or 0) != sub:
@@ -389,7 +389,7 @@ def get_property(
         raise HTTPException(status_code=404, detail="Property not found")
 
     # auth (basic)
-    if role == "admin":
+    if role == "admin" or "super_admin":
         pass
     elif role == "landlord":
         if int(p.landlord_id or 0) != sub:
@@ -419,7 +419,7 @@ def update_property(
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
     payload = _decode(creds)
-    _require_roles(payload, {"admin", "manager"})
+    _require_roles(payload, {"admin","super_admin", "manager"})
 
     p = db.query(Property).filter(Property.id == property_id).first()
     if not p:
@@ -461,7 +461,7 @@ def delete_property(
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
     payload = _decode(creds)
-    _require_roles(payload, {"admin"})
+    _require_roles(payload, {"admin", "super_admin"})
 
     p = db.query(Property).filter(Property.id == property_id).first()
     if not p:
@@ -483,7 +483,7 @@ def assign_manager(
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
     payload = _decode(creds)
-    _require_roles(payload, {"admin"})
+    _require_roles(payload, {"admin", "super_admin"})
 
     prop = db.query(Property).filter(Property.id == property_id).first()
     if not prop:

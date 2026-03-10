@@ -69,7 +69,7 @@ def _authorize_landlord_view(current: dict, landlord_id: int) -> None:
 def _authorize_payout_view(db: Session, current: dict, landlord_id: int) -> None:
     role = (current or {}).get("role")
 
-    if role == "admin":
+    if role == "admin" or "super_admin":
         return
 
     if role == "landlord":
@@ -90,7 +90,7 @@ def _authorize_payout_view(db: Session, current: dict, landlord_id: int) -> None
 @router.post(
     "/",
     response_model=PayoutOut,
-    dependencies=[Depends(role_required(["admin"]))],  # keep payouts creation controlled
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],  # keep payouts creation controlled
 )
 def create_payout(
     payload: PayoutCreate,
@@ -180,7 +180,7 @@ def list_payouts(
 @router.put(
     "/{payout_id}",
     response_model=PayoutOut,
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def update_payout(
     payout_id: int,
@@ -213,7 +213,7 @@ def update_payout(
 @router.delete(
     "/{payout_id}",
     response_model=dict,
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def delete_payout(
     payout_id: int,

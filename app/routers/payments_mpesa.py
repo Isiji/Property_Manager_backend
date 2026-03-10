@@ -157,7 +157,7 @@ def simulate_mark_paid(
     db: Session = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    if current_user.get("role") not in ("admin", "manager", "landlord"):
+    if current_user.get("role") not in ("admin", "manager", "landlord", "super_admin"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     p = db.query(models.Payment).filter(models.Payment.id == payment_id).first()

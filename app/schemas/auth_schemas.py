@@ -3,20 +3,22 @@ from pydantic import BaseModel
 
 class RegisterUser(BaseModel):
     """
-    Registration payload for all roles.
+    Public registration payload.
 
-    Tenants:
-      - property_code + unit_number (preferred) OR property_code + unit_id (legacy)
+    Allowed public roles:
+      - landlord
+      - manager
+      - tenant
 
-    Managers:
-      - manager_type: "individual" | "agency"
-      - if agency, company_name is required
+    Blocked from self-registration:
+      - admin
+      - super_admin
     """
     name: str
     phone: str
     email: str | None = None
     password: str | None = None
-    role: str  # "admin" | "landlord" | "manager" | "tenant"
+    role: str  # "landlord" | "manager" | "tenant"
 
     # Tenant-only fields
     property_code: str | None = None
@@ -26,7 +28,7 @@ class RegisterUser(BaseModel):
     # Common optional
     id_number: str | None = None
 
-    # Manager-only fields (NEW)
+    # Manager-only fields
     manager_type: str | None = None  # "individual" | "agency"
     company_name: str | None = None
     contact_person: str | None = None
@@ -37,4 +39,4 @@ class RegisterUser(BaseModel):
 class LoginUser(BaseModel):
     phone: str
     password: str | None = None
-    role: str  # "admin" | "landlord" | "manager" | "tenant"
+    role: str  # "super_admin" | "admin" | "landlord" | "manager" | "tenant"

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-from app.models.user_models import Admin
+from app.models.user_models import Admin, SuperAdmin
 from app.auth.password_utils import hash_password
 
 

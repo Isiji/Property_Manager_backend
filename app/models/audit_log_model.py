@@ -1,4 +1,3 @@
-# app/models/audit_log_model.py
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,21 +13,20 @@ class AuditLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # Scope anchor (VERY IMPORTANT)
+    # Scope anchor
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=True, index=True)
 
     action = Column(String(80), nullable=False)          # e.g. "CREATE_PAYMENT"
     entity_type = Column(String(50), nullable=False)     # e.g. "payment", "tenant"
-    entity_id = Column(Integer, nullable=True)           # record id if exists
+    entity_id = Column(Integer, nullable=True)
     message = Column(Text, nullable=True)
 
     # Who did it
-    actor_role = Column(String(30), nullable=True)       # admin/landlord/manager/tenant
-    actor_id = Column(Integer, nullable=True)            # token sub
+    actor_role = Column(String(30), nullable=True)       # super_admin/admin/landlord/manager/tenant
+    actor_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Optional relationship
     property = relationship("Property", lazy="joined")
 
     __table_args__ = (

@@ -14,7 +14,7 @@ def create_user(session, user_type="landlord"):
     return user
 
 def test_notification_for_all_users(db_session):
-    for user_type in ["landlord", "property_manager", "tenant", "admin"]:
+    for user_type in ["landlord", "property_manager", "tenant", "admin", "super_admin"]:
         user = create_user(db_session, user_type)
         notification = notification_model.Notification(
             user_id=user.id,

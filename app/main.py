@@ -1,7 +1,11 @@
-# app/main.py
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import Base, engine
+from sqlalchemy.orm import Session
+
+from app.database import Base, engine, SessionLocal
+from app.auth.password_utils import hash_password
+from app.utils.phone_utils import normalize_ke_phone
+from app.models.user_models import SuperAdmin
 
 from app.routers import (
     bulk_upload,
@@ -31,15 +35,54 @@ from app.routers import (
     admin_dashboard_router,
     payout_router,
     audit_log_router,
-
-
 )
 from app.services import reminder_service  # import the reminder scheduler
 from app.core.config import settings
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Property Management API")
+
+
+def bootstrap_super_admin():
+    """
+    Create default super admin if none exists.
+    """
+    db: Session = SessionLocal()
+    try:
+        existing = db.query(SuperAdmin).first()
+        if existing:
+            print("✅ Super admin already exists. Bootstrap skipped.")
+            return
+
+        default_name = "PropSmart Super Admin"
+        default_email = "blairisiji@gmail.com"
+        default_phone = normalize_ke_phone("0702805027")
+        default_password = "Admin@12345"
+
+        super_admin = SuperAdmin(
+            name=default_name,
+            email=default_email,
+            phone=default_phone,
+            password=hash_password(default_password),
+            active=True,
+            id_number=None,
+        )
+        db.add(super_admin)
+        db.commit()
+
+        print("🚀 Default super admin created.")
+        print(f"   phone: {default_phone}")
+        print(f"   email: {default_email}")
+        print(f"   password: {default_password}")
+        print("⚠️ Change this password immediately after first login.")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Failed to bootstrap super admin: {e}")
+    finally:
+        db.close()
+
 
 origins = [
     "http://localhost:3000",  # React default
@@ -49,6 +92,7 @@ origins = [
     "*",
     "https://bruce-nonimaginational-noel.ngrok-free.dev",
 ]
+
 # ✅ Enable CORS to allow Flutter Web requests
 print("CORS_ORIGINS:", settings.CORS_ORIGINS),
 
@@ -63,21 +107,31 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def startup_event():
+    bootstrap_super_admin()
+
+
 @app.get("/", include_in_schema=False)
 def read_root():
-    return {"status": "Ok",
-            "service": "Property Management API",
-            "version": "0.1.0",
-            "docs": "/docs",
-            "health": "/healthz",
-            }
+    return {
+        "status": "Ok",
+        "service": "Property Management API",
+        "version": "0.1.0",
+        "docs": "/docs",
+        "health": "/healthz",
+    }
+
+
 @app.get("/healthz", include_in_schema=False)
 def health_check():
     return {"ok": True}
 
+
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return Response(status_code=204)
+
 
 # ✅ Register routers
 app.include_router(landlord_routers.router)
@@ -100,14 +154,13 @@ app.include_router(property_units_lookup.router)
 app.include_router(payments_mpesa.router)
 app.include_router(webhooks_daraja.router)
 app.include_router(reports_property_status_router.router)
-app.include_router(payment_receipts_router.router) 
+app.include_router(payment_receipts_router.router)
 app.include_router(admin_jobs_router.router)
 app.include_router(admin_seed_router.router)
 app.include_router(property_manager_router.router)
 app.include_router(agency_router.router)
 app.include_router(admin_dashboard_router.router)
 app.include_router(audit_log_router.router)
-
 
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()

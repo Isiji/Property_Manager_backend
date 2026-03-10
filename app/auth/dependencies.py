@@ -1,10 +1,14 @@
+#auth/dependencies.py
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models.user_models import Landlord, PropertyManager, Tenant, Admin
+from app.models.user_models import Landlord, PropertyManager, Tenant, Admin, SuperAdmin
 from app.auth.jwt_utils import decode_access_token
+from app.dependencies import get_db, get_current_user, role_required
+
+__all__ = ["get_db", "get_current_user", "role_required"]
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 

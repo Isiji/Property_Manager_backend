@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Boolean, ForeignKey, Integer, String
+from datetime import datetime
+
+from sqlalchemy import Column, Boolean, ForeignKey, Integer, String, DateTime
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -79,6 +81,7 @@ class ManagerUser(Base):
     # (keep it simple now: "manager_staff" or "manager_admin")
     staff_role = Column(String, nullable=False, default="manager_staff")
     active = Column(Boolean, nullable=False, default=True)
+
     manager = relationship("PropertyManager", back_populates="staff")
 
 
@@ -109,3 +112,19 @@ class Admin(Base):
     phone = Column(String, unique=True, nullable=True, index=True)
     password = Column(String, nullable=False)  # hashed password
     id_number = Column(String, nullable=True, index=True)
+
+    # NEW: controlled by super_admin
+    active = Column(Boolean, nullable=False, default=True)
+
+
+class SuperAdmin(Base):
+    __tablename__ = "super_admins"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
+    phone = Column(String, unique=True, nullable=True, index=True)
+    password = Column(String, nullable=False)
+    id_number = Column(String, nullable=True, index=True)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

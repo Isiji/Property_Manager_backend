@@ -1,4 +1,5 @@
 from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -9,7 +10,14 @@ from app.auth.dependencies import get_db
 from app.schemas.auth_schemas import RegisterUser, LoginUser
 from app.utils.phone_utils import normalize_ke_phone
 
-from app.models.user_models import Landlord, PropertyManager, ManagerUser, Tenant, Admin
+from app.models.user_models import (
+    Landlord,
+    PropertyManager,
+    ManagerUser,
+    Tenant,
+    Admin,
+    SuperAdmin,
+)
 from app.models.property_models import Property, Unit, Lease
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -51,6 +59,13 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
 
         role = (data.role or "").strip().lower()
 
+        # BLOCKED: admin + super_admin self registration
+        if role in {"admin", "super_admin"}:
+            raise HTTPException(
+                status_code=403,
+                detail=f"{role} self-registration is disabled. Only super_admin can create admins.",
+            )
+
         # ---------------- LANDLORD ----------------
         if role == "landlord":
             if not data.password:
@@ -75,7 +90,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             if not data.password:
                 raise HTTPException(status_code=400, detail="Password is required for manager")
 
-            # Staff phone/email must be unique under ManagerUser
             if exists_by_email_or_phone(db, ManagerUser, email, phone):
                 raise HTTPException(status_code=409, detail="Email or phone already registered for a manager staff")
 
@@ -91,18 +105,14 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             if manager_type == "agency" and not company_name:
                 raise HTTPException(status_code=400, detail="company_name is required when manager_type='agency'")
 
-            # Org display rule:
-            # - agency: show company_name (fallback name)
-            # - individual: show name
             org_name = company_name if (manager_type == "agency" and company_name) else data.name.strip()
 
             org = PropertyManager(
                 name=org_name,
-                phone=phone,          # keep as a main contact phone (can be staff phone for now)
-                email=email,          # can be staff email for now
-                password=None,        # moved to ManagerUser
+                phone=phone,
+                email=email,
+                password=None,
                 id_number=data.id_number,
-
                 type=manager_type,
                 company_name=company_name,
                 contact_person=contact_person if manager_type == "agency" else None,
@@ -111,9 +121,8 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 logo_url=None,
             )
             db.add(org)
-            db.flush()  # get org.id
+            db.flush()
 
-            # First staff = admin
             staff_display_name = contact_person if (manager_type == "agency" and contact_person) else data.name.strip()
 
             staff = ManagerUser(
@@ -139,25 +148,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 "manager_type": org.type,
                 "manager_name": org.company_name or org.name,
             }
-
-        # ---------------- ADMIN ----------------
-        if role == "admin":
-            if not data.password:
-                raise HTTPException(status_code=400, detail="Password is required for admin")
-            if exists_by_email_or_phone(db, Admin, email, phone):
-                raise HTTPException(status_code=409, detail="Email or phone already registered for an admin")
-
-            user = Admin(
-                name=data.name.strip(),
-                phone=phone,
-                email=email,
-                password=hash_password(data.password),
-                id_number=data.id_number,
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            return {"message": "Admin registered successfully", "id": user.id}
 
         # ---------------- TENANT ----------------
         if role == "tenant":
@@ -269,9 +259,13 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
 
     # -------- MANAGER login via ManagerUser --------
     if role == "manager":
-        staff = db.query(ManagerUser).filter(ManagerUser.phone == phone, ManagerUser.active == True).first()  # noqa
+        staff = db.query(ManagerUser).filter(
+            ManagerUser.phone == phone,
+            ManagerUser.active == True,  # noqa: E712
+        ).first()
+
         if not staff:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
         if not data.password or not verify_password(data.password, staff.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
@@ -291,11 +285,11 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
             "role": "manager",
         }
 
-    # -------- others unchanged --------
     model_map = {
         "landlord": Landlord,
         "tenant": Tenant,
         "admin": Admin,
+        "super_admin": SuperAdmin,
     }
     model = model_map.get(role)
     if not model:
@@ -303,7 +297,10 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
 
     user = db.query(model).filter(model.phone == phone).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    if hasattr(user, "active") and getattr(user, "active") is False:
+        raise HTTPException(status_code=403, detail="Account is inactive")
 
     if role == "tenant":
         token = create_access_token({"sub": str(user.id), "role": role})
@@ -315,5 +312,6 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
     if not data.password or not verify_password(data.password, user.password):
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    token = create_access_token({"sub": str(user.id), "role": role})
+    token_payload = {"sub": str(user.id), "role": role}
+    token = create_access_token(token_payload)
     return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}

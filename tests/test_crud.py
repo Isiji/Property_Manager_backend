@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.models.user_models import Landlord, Tenant, PropertyManager, Admin
+from app.models.user_models import Landlord, Tenant, PropertyManager, Admin, SuperAdmin
 from app.models.property_models import Property, Unit, Lease
 from app.database import TestingSessionLocal
 from sqlalchemy.orm import Session
