@@ -16,7 +16,7 @@ router = APIRouter(
     "/",
     response_model=LandlordOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(role_required(["admin", "property_manager"]))],
+    dependencies=[Depends(role_required(["admin", "property_manager", "super_admin"]))],
 )
 def create_landlord(payload: LandlordCreate, db: Session = Depends(get_db)):
     return crud.create_landlord(db, name=payload.name, phone=payload.phone, email=payload.email)
@@ -24,7 +24,7 @@ def create_landlord(payload: LandlordCreate, db: Session = Depends(get_db)):
 @router.get(
     "/",
     response_model=List[LandlordOut],
-    dependencies=[Depends(role_required(["admin", "property_manager"]))],
+    dependencies=[Depends(role_required(["admin", "property_manager", "super_admin"]))],
 )
 def list_landlords(skip: int = 0, limit: int = 100, q: str | None = None, db: Session = Depends(get_db)):
     if q:
@@ -40,7 +40,7 @@ def get_landlord(
     role = current_user.get("role")
 
     # ✅ allow: admin, property_manager, or landlord self
-    if role not in {"admin", "property_manager"}:
+    if role not in {"admin", "property_manager", "super_admin"}:
         if role == "landlord":
             # 🔥 IMPORTANT FIX:
             # your landlord token contains {sub: "<landlord_id>"} not landlord_id
@@ -76,7 +76,7 @@ def update_landlord(
             token_sub = None
         is_self = token_sub == landlord_id
 
-    if not (role == "admin" or is_self):
+    if not (role == "admin" or "super_admin" or is_self):
         raise HTTPException(status_code=403, detail="Not authorized to update this landlord")
 
     landlord = crud.get_landlord(db, landlord_id)
@@ -88,7 +88,7 @@ def update_landlord(
 @router.delete(
     "/{landlord_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def delete_landlord(landlord_id: int, db: Session = Depends(get_db)):
     landlord = crud.get_landlord(db, landlord_id)

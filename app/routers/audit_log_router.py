@@ -46,7 +46,7 @@ def _enrich(db: Session, rows: List[models.AuditLog]) -> List[Dict[str, Any]]:
 @router.get(
     "/me",
     response_model=List[AuditLogOut],
-    dependencies=[Depends(role_required(["admin", "landlord", "manager", "property_manager"]))],
+    dependencies=[Depends(role_required(["admin", "landlord", "manager", "property_manager", "super_admin"]))],
 )
 def my_audit_logs(
     db: Session = Depends(get_db),
@@ -58,7 +58,7 @@ def my_audit_logs(
     sub = int((current or {}).get("sub", 0) or 0)
 
     # Admin: sees everything
-    if role == "admin":
+    if role == "admin" or "super_admin":
         rows = audit_log_crud.list_logs(db, property_ids=None, limit=limit, q=q)
         return _enrich(db, rows)
 

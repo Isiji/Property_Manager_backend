@@ -163,7 +163,7 @@ def admin_overview(
 @router.get(
     "/properties",
     response_model=List[PropertySummaryRow],
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def admin_properties_summary(db: Session = Depends(get_db), limit: int = Query(200, ge=1, le=2000)):
     props = db.query(models.Property).order_by(models.Property.id.desc()).limit(int(limit)).all()
@@ -196,7 +196,7 @@ def admin_properties_summary(db: Session = Depends(get_db), limit: int = Query(2
 @router.get(
     "/finance/summary",
     response_model=List[FinancePropertyRow],
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def admin_finance_summary(
     db: Session = Depends(get_db),
@@ -281,7 +281,7 @@ def admin_finance_summary(
 
 @router.get(
     "/maintenance/summary",
-    dependencies=[Depends(role_required(["admin"]))],
+    dependencies=[Depends(role_required(["admin", "super_admin"]))],
 )
 def admin_maintenance_summary(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """
