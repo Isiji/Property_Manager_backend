@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
 
+    # ─────────── OTP / PASSWORD RESET ───────────
+    PASSWORD_RESET_OTP_EXPIRY_MINUTES: int = 10
+
     # ─────────── SMS CONFIG ───────────
     SMS_PROVIDER: Optional[str] = None  # "twilio" | "africastalking" | "console"
     TWILIO_ACCOUNT_SID: Optional[str] = None
@@ -65,12 +68,12 @@ class Settings(BaseSettings):
     DARAJA_CONSUMER_SECRET: Optional[str] = None
 
     # LNM (STK) specific
-    DARAJA_LNM_SHORTCODE: Optional[str] = None           # e.g. 174379 (sandbox) or 600XXX
-    DARAJA_LNM_PASSKEY: Optional[str] = None         # required for STK
+    DARAJA_LNM_SHORTCODE: Optional[str] = None
+    DARAJA_LNM_PASSKEY: Optional[str] = None
     DARAJA_RESULT_URL: Optional[str] = None
     DARAJA_TIMEOUT_URL: Optional[str] = None
-    DARAJA_CALLBACK_URL: Optional[str] = None        # for STK Push
-    
+    DARAJA_CALLBACK_URL: Optional[str] = None
+
     # (Only needed for B2C/B2B; keep for later)
     DARAJA_INITIATOR_NAME: Optional[str] = None
     DARAJA_INITIATOR_PASSWORD: Optional[str] = None
@@ -84,7 +87,6 @@ class Settings(BaseSettings):
     EMAIL_HOST_PASSWORD: Optional[str] = None
 
     # ─────────── CORS / FRONTEND ORIGINS ───────────
-    # Read as plain string to avoid JSON decoding errors, then parse.
     FRONTEND_ORIGINS_RAW: Optional[str] = None
 
     # ─────────── GENERAL ───────────

@@ -68,7 +68,7 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
         if not phone:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format."
+                detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
             )
 
         role = (data.role or "").strip().lower()
@@ -79,11 +79,16 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 detail=f"{role} self-registration is disabled. Only super_admin can create admins.",
             )
 
+        # ---------------- LANDLORD ----------------
         if role == "landlord":
             if not data.password:
                 raise HTTPException(status_code=400, detail="Password is required for landlord")
+
             if exists_by_email_or_phone(db, Landlord, email, phone):
-                raise HTTPException(status_code=409, detail="Email or phone already registered for a landlord")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Email or phone already registered for a landlord",
+                )
 
             user = Landlord(
                 name=data.name.strip(),
@@ -97,16 +102,23 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.refresh(user)
             return {"message": "Landlord registered successfully", "id": user.id}
 
+        # ---------------- MANAGER ----------------
         if role == "manager":
             if not data.password:
                 raise HTTPException(status_code=400, detail="Password is required for manager")
 
             if exists_by_email_or_phone(db, ManagerUser, email, phone):
-                raise HTTPException(status_code=409, detail="Email or phone already registered for a manager staff")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Email or phone already registered for a manager staff",
+                )
 
             manager_type = (data.manager_type or "individual").strip().lower()
             if manager_type not in ("individual", "agency"):
-                raise HTTPException(status_code=400, detail="manager_type must be 'individual' or 'agency'")
+                raise HTTPException(
+                    status_code=400,
+                    detail="manager_type must be 'individual' or 'agency'",
+                )
 
             company_name = (data.company_name or "").strip() or None
             contact_person = (data.contact_person or "").strip() or None
@@ -114,7 +126,10 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             office_email = clean_email(data.office_email)
 
             if manager_type == "agency" and not company_name:
-                raise HTTPException(status_code=400, detail="company_name is required when manager_type='agency'")
+                raise HTTPException(
+                    status_code=400,
+                    detail="company_name is required when manager_type='agency'",
+                )
 
             org_name = company_name if (manager_type == "agency" and company_name) else data.name.strip()
 
@@ -134,7 +149,9 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.add(org)
             db.flush()
 
-            staff_display_name = contact_person if (manager_type == "agency" and contact_person) else data.name.strip()
+            staff_display_name = (
+                contact_person if (manager_type == "agency" and contact_person) else data.name.strip()
+            )
 
             staff = ManagerUser(
                 manager_id=org.id,
@@ -160,6 +177,7 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 "manager_name": org.company_name or org.name,
             }
 
+        # ---------------- TENANT ----------------
         if role == "tenant":
             if not data.property_code:
                 raise HTTPException(status_code=400, detail="Property code is required for tenant registration")
@@ -174,7 +192,10 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 )
 
             if exists_by_email_or_phone(db, Tenant, email, phone):
-                raise HTTPException(status_code=409, detail="Email or phone already registered for a tenant")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Email or phone already registered for a tenant",
+                )
 
             prop_code = (data.property_code or "").strip()
             prop = (
@@ -265,7 +286,10 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
 
     phone = clean_phone(data.phone)
     if not phone:
-        raise HTTPException(status_code=400, detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
+        )
 
     if role == "manager":
         staff = db.query(ManagerUser).filter(
@@ -279,12 +303,14 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
         if not data.password or not verify_password(data.password, staff.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
 
-        token = create_access_token({
-            "sub": str(staff.id),
-            "role": "manager",
-            "manager_id": staff.manager_id,
-            "staff_role": staff.staff_role,
-        })
+        token = create_access_token(
+            {
+                "sub": str(staff.id),
+                "role": "manager",
+                "manager_id": staff.manager_id,
+                "staff_role": staff.staff_role,
+            }
+        )
 
         return {
             "access_token": token,
@@ -306,20 +332,10 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
 
     user = db.query(model).filter(model.phone == phone).first()
     if not user:
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if hasattr(user, "active") and getattr(user, "active") is False:
         raise HTTPException(status_code=403, detail="Account is inactive")
-
-    if role == "tenant":
-        if not getattr(user, "password", None):
-            raise HTTPException(status_code=401, detail="Account has no password set")
-
-        if not data.password or not verify_password(data.password, user.password):
-            raise HTTPException(status_code=401, detail="Invalid password")
-
-        token = create_access_token({"sub": str(user.id), "role": role})
-        return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
 
     if not getattr(user, "password", None):
         raise HTTPException(status_code=401, detail="Account has no password set")
@@ -327,10 +343,13 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
     if not data.password or not verify_password(data.password, user.password):
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    token_payload = {"sub": str(user.id), "role": role}
-    token = create_access_token(token_payload)
+    token = create_access_token({"sub": str(user.id), "role": role})
     return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
 
+
+# ==========================================================
+# FORGOT PASSWORD / OTP RESET
+# ==========================================================
 
 @router.post("/request-password-reset")
 def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -343,11 +362,9 @@ def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(ge
 
         _, user = get_user_by_role_and_email(db, role, email)
 
-        # do not reveal too much
+        # Always return same message for security
         if not user:
-            return {
-                "message": "If an account with that email exists, an OTP has been sent."
-            }
+            return {"message": "If an account with that email exists, an OTP has been sent."}
 
         otp = create_password_reset_otp(db, email=email)
 
@@ -359,13 +376,16 @@ def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(ge
             f"If you did not request this, ignore this email."
         )
 
-        notify_email(
+        log = notify_email(
             db=db,
             to_email=email,
             subject=subject,
             message=message,
             event_type="PASSWORD_RESET_OTP",
         )
+
+        print("EMAIL STATUS:", log.status)
+        print("EMAIL ERROR:", log.error_message)
 
         db.commit()
         return {"message": "If an account with that email exists, an OTP has been sent."}
@@ -410,7 +430,10 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         new_password = (data.new_password or "").strip()
 
         if len(new_password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+            raise HTTPException(
+                status_code=400,
+                detail="Password must be at least 6 characters long",
+            )
 
         _, user = get_user_by_role_and_email(db, role, email)
         if not user:
@@ -420,8 +443,8 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         if not otp:
             raise HTTPException(status_code=400, detail="Invalid or expired OTP")
 
-        hashed = hash_password(new_password)
-        set_user_password(user, hashed, role)
+        hashed_password = hash_password(new_password)
+        set_user_password(user, hashed_password, role)
         mark_otp_used(db, otp)
 
         db.add(user)
@@ -446,9 +469,7 @@ def resend_reset_otp(data: ResendResetOTPRequest, db: Session = Depends(get_db))
         _, user = get_user_by_role_and_email(db, role, email)
 
         if not user:
-            return {
-                "message": "If an account with that email exists, an OTP has been sent."
-            }
+            return {"message": "If an account with that email exists, an OTP has been sent."}
 
         otp = create_password_reset_otp(db, email=email)
 
@@ -460,13 +481,16 @@ def resend_reset_otp(data: ResendResetOTPRequest, db: Session = Depends(get_db))
             f"If you did not request this, ignore this email."
         )
 
-        notify_email(
+        log = notify_email(
             db=db,
             to_email=email,
             subject=subject,
             message=message,
             event_type="PASSWORD_RESET_OTP_RESENT",
         )
+
+        print("EMAIL STATUS:", log.status)
+        print("EMAIL ERROR:", log.error_message)
 
         db.commit()
         return {"message": "If an account with that email exists, an OTP has been sent."}
