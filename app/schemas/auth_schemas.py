@@ -1,42 +1,52 @@
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, EmailStr
 
 
 class RegisterUser(BaseModel):
-    """
-    Public registration payload.
-
-    Allowed public roles:
-      - landlord
-      - manager
-      - tenant
-
-    Blocked from self-registration:
-      - admin
-      - super_admin
-    """
     name: str
-    phone: str
-    email: str | None = None
-    password: str | None = None
-    role: str  # "landlord" | "manager" | "tenant"
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    role: str
+    id_number: Optional[str] = None
 
-    # Tenant-only fields
-    property_code: str | None = None
-    unit_id: int | None = None
-    unit_number: str | None = None
+    # tenant
+    property_code: Optional[str] = None
+    unit_number: Optional[str] = None
+    unit_id: Optional[int] = None
 
-    # Common optional
-    id_number: str | None = None
-
-    # Manager-only fields
-    manager_type: str | None = None  # "individual" | "agency"
-    company_name: str | None = None
-    contact_person: str | None = None
-    office_phone: str | None = None
-    office_email: str | None = None
+    # manager
+    manager_type: Optional[str] = None
+    company_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    office_phone: Optional[str] = None
+    office_email: Optional[EmailStr] = None
 
 
 class LoginUser(BaseModel):
     phone: str
-    password: str | None = None
-    role: str  # "super_admin" | "admin" | "landlord" | "manager" | "tenant"
+    password: Optional[str] = None
+    role: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    role: str
+    email: EmailStr
+
+
+class VerifyResetOTPRequest(BaseModel):
+    role: str
+    email: EmailStr
+    otp_code: str
+
+
+class ResetPasswordRequest(BaseModel):
+    role: str
+    email: EmailStr
+    otp_code: str
+    new_password: str
+
+
+class ResendResetOTPRequest(BaseModel):
+    role: str
+    email: EmailStr

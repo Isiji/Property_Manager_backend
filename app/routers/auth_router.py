@@ -1,5 +1,4 @@
 from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -7,7 +6,14 @@ from sqlalchemy.orm import Session
 from app.auth.password_utils import hash_password, verify_password
 from app.auth.jwt_utils import create_access_token
 from app.auth.dependencies import get_db
-from app.schemas.auth_schemas import RegisterUser, LoginUser
+from app.schemas.auth_schemas import (
+    RegisterUser,
+    LoginUser,
+    ForgotPasswordRequest,
+    VerifyResetOTPRequest,
+    ResetPasswordRequest,
+    ResendResetOTPRequest,
+)
 from app.utils.phone_utils import normalize_ke_phone
 
 from app.models.user_models import (
@@ -19,6 +25,14 @@ from app.models.user_models import (
     SuperAdmin,
 )
 from app.models.property_models import Property, Unit, Lease
+
+from app.services.auth_lookup_service import get_user_by_role_and_email, set_user_password
+from app.services.otp_service import (
+    create_password_reset_otp,
+    get_valid_password_reset_otp,
+    mark_otp_used,
+)
+from app.services.notification_service import notify_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -59,14 +73,12 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
 
         role = (data.role or "").strip().lower()
 
-        # BLOCKED: admin + super_admin self registration
         if role in {"admin", "super_admin"}:
             raise HTTPException(
                 status_code=403,
                 detail=f"{role} self-registration is disabled. Only super_admin can create admins.",
             )
 
-        # ---------------- LANDLORD ----------------
         if role == "landlord":
             if not data.password:
                 raise HTTPException(status_code=400, detail="Password is required for landlord")
@@ -85,7 +97,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
             db.refresh(user)
             return {"message": "Landlord registered successfully", "id": user.id}
 
-        # ---------------- MANAGER (ORG + STAFF) ----------------
         if role == "manager":
             if not data.password:
                 raise HTTPException(status_code=400, detail="Password is required for manager")
@@ -149,7 +160,6 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
                 "manager_name": org.company_name or org.name,
             }
 
-        # ---------------- TENANT ----------------
         if role == "tenant":
             if not data.property_code:
                 raise HTTPException(status_code=400, detail="Property code is required for tenant registration")
@@ -257,7 +267,6 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
     if not phone:
         raise HTTPException(status_code=400, detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.")
 
-    # -------- MANAGER login via ManagerUser --------
     if role == "manager":
         staff = db.query(ManagerUser).filter(
             ManagerUser.phone == phone,
@@ -303,6 +312,12 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Account is inactive")
 
     if role == "tenant":
+        if not getattr(user, "password", None):
+            raise HTTPException(status_code=401, detail="Account has no password set")
+
+        if not data.password or not verify_password(data.password, user.password):
+            raise HTTPException(status_code=401, detail="Invalid password")
+
         token = create_access_token({"sub": str(user.id), "role": role})
         return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
 
@@ -315,3 +330,150 @@ def login_user(data: LoginUser, db: Session = Depends(get_db)):
     token_payload = {"sub": str(user.id), "role": role}
     token = create_access_token(token_payload)
     return {"access_token": token, "token_type": "bearer", "id": user.id, "role": role}
+
+
+@router.post("/request-password-reset")
+def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    try:
+        role = (data.role or "").strip().lower()
+        email = clean_email(data.email)
+
+        if not email:
+            raise HTTPException(status_code=400, detail="Valid email is required")
+
+        _, user = get_user_by_role_and_email(db, role, email)
+
+        # do not reveal too much
+        if not user:
+            return {
+                "message": "If an account with that email exists, an OTP has been sent."
+            }
+
+        otp = create_password_reset_otp(db, email=email)
+
+        subject = "PropSmart Password Reset OTP"
+        message = (
+            f"Hello,\n\n"
+            f"Your PropSmart password reset OTP is: {otp.otp_code}\n"
+            f"It expires in 10 minutes.\n\n"
+            f"If you did not request this, ignore this email."
+        )
+
+        notify_email(
+            db=db,
+            to_email=email,
+            subject=subject,
+            message=message,
+            event_type="PASSWORD_RESET_OTP",
+        )
+
+        db.commit()
+        return {"message": "If an account with that email exists, an OTP has been sent."}
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/verify-reset-otp")
+def verify_reset_otp(data: VerifyResetOTPRequest, db: Session = Depends(get_db)):
+    try:
+        role = (data.role or "").strip().lower()
+        email = clean_email(data.email)
+        otp_code = (data.otp_code or "").strip()
+
+        _, user = get_user_by_role_and_email(db, role, email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        otp = get_valid_password_reset_otp(db, email=email, otp_code=otp_code)
+        if not otp:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+
+        return {"message": "OTP verified successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reset-password")
+def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    try:
+        role = (data.role or "").strip().lower()
+        email = clean_email(data.email)
+        otp_code = (data.otp_code or "").strip()
+        new_password = (data.new_password or "").strip()
+
+        if len(new_password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+
+        _, user = get_user_by_role_and_email(db, role, email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        otp = get_valid_password_reset_otp(db, email=email, otp_code=otp_code)
+        if not otp:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+
+        hashed = hash_password(new_password)
+        set_user_password(user, hashed, role)
+        mark_otp_used(db, otp)
+
+        db.add(user)
+        db.commit()
+
+        return {"message": "Password reset successfully"}
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/resend-reset-otp")
+def resend_reset_otp(data: ResendResetOTPRequest, db: Session = Depends(get_db)):
+    try:
+        role = (data.role or "").strip().lower()
+        email = clean_email(data.email)
+
+        _, user = get_user_by_role_and_email(db, role, email)
+
+        if not user:
+            return {
+                "message": "If an account with that email exists, an OTP has been sent."
+            }
+
+        otp = create_password_reset_otp(db, email=email)
+
+        subject = "PropSmart Password Reset OTP (Resent)"
+        message = (
+            f"Hello,\n\n"
+            f"Your new PropSmart password reset OTP is: {otp.otp_code}\n"
+            f"It expires in 10 minutes.\n\n"
+            f"If you did not request this, ignore this email."
+        )
+
+        notify_email(
+            db=db,
+            to_email=email,
+            subject=subject,
+            message=message,
+            event_type="PASSWORD_RESET_OTP_RESENT",
+        )
+
+        db.commit()
+        return {"message": "If an account with that email exists, an OTP has been sent."}
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,31 +1,24 @@
-# app/services/email_service.py
 import smtplib
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import logging
+from email.mime.multipart import MIMEMultipart
 
-logger = logging.getLogger(__name__)
+from app.core.config import settings
 
-# Configure your SMTP server settings
-SMTP_SERVER = "smtp.gmail.com"  # or your email provider
-SMTP_PORT = 587
-SMTP_USER = "your_email@gmail.com"
-SMTP_PASSWORD = "your_app_password"  # Use App Passwords if Gmail
 
-def send_email(to_email: str, subject: str, body: str):
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = SMTP_USER
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
+def send_email(to_email: str, subject: str, body: str, html_body: str | None = None) -> None:
+    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
+        raise ValueError("SMTP credentials are not configured")
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = settings.EMAIL_FROM or settings.SMTP_USERNAME
+    msg["To"] = to_email
 
-        logger.info(f"Email sent to {to_email} | {subject}")
+    msg.attach(MIMEText(body, "plain"))
 
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+    if html_body:
+        msg.attach(MIMEText(html_body, "html"))
+
+    with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        server.sendmail(msg["From"], [to_email], msg.as_string())
