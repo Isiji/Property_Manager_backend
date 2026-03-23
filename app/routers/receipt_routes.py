@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -23,8 +25,16 @@ def download_receipt_by_payment(payment_id: int, db: Session = Depends(get_db)):
     if not receipt.pdf_path:
         raise HTTPException(status_code=404, detail="Receipt PDF path is missing")
 
+    abs_path = os.path.abspath(receipt.pdf_path)
+
+    if not os.path.exists(abs_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Receipt PDF file not found on disk: {abs_path}"
+        )
+
     return FileResponse(
-        path=receipt.pdf_path,
+        path=abs_path,
         media_type="application/pdf",
         filename=f"{receipt.receipt_number}.pdf",
     )

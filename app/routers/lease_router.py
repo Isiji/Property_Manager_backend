@@ -1,21 +1,23 @@
 from __future__ import annotations
+
 from datetime import datetime
 from io import BytesIO
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
-from typing import List
-from app.dependencies import get_db, get_current_user
-from app.schemas.lease_schema import LeaseCreate, LeaseUpdate, LeaseOut
-from app.crud import lease_crud
-from app import models
-
-# PDF
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 
+from app.dependencies import get_db, get_current_user
+from app.schemas.lease_schema import LeaseCreate, LeaseUpdate, LeaseOut
+from app.crud import lease_crud
+from app import models
+
 router = APIRouter(prefix="/leases", tags=["Leases"])
+
 
 @router.post("/", response_model=LeaseOut)
 def create_lease(payload: LeaseCreate, db: Session = Depends(get_db)):
@@ -24,6 +26,34 @@ def create_lease(payload: LeaseCreate, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# IMPORTANT:
+# Put /me ABOVE /{lease_id}, otherwise FastAPI treats "me" like an int param.
+@router.get("/me", response_model=List[LeaseOut])
+def my_leases(
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    role = (current or {}).get("role")
+    sub = (current or {}).get("sub")
+
+    if not role or not sub:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user_id = int(sub)
+
+    if role == "tenant":
+        return lease_crud.list_leases_for_tenant(db, user_id)
+
+    if role == "landlord":
+        return lease_crud.list_leases_for_landlord(db, user_id)
+
+    if role in ("property_manager", "manager"):
+        return lease_crud.list_leases_for_manager(db, user_id)
+
+    return []
+
+
 @router.get("/{lease_id}", response_model=LeaseOut)
 def read_lease(lease_id: int, db: Session = Depends(get_db)):
     lease = lease_crud.get_lease(db, lease_id)
@@ -31,12 +61,18 @@ def read_lease(lease_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Lease not found")
     return lease
 
+
 @router.put("/{lease_id}", response_model=LeaseOut)
-def update_lease(lease_id: int, payload: LeaseUpdate, db: Session = Depends(get_db)):
+def update_lease(
+    lease_id: int,
+    payload: LeaseUpdate,
+    db: Session = Depends(get_db),
+):
     lease = lease_crud.update_lease(db, lease_id, payload)
     if not lease:
         raise HTTPException(status_code=404, detail="Lease not found")
     return lease
+
 
 @router.delete("/{lease_id}", response_model=dict)
 def delete_lease(lease_id: int, db: Session = Depends(get_db)):
@@ -45,82 +81,198 @@ def delete_lease(lease_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Lease not found")
     return {"ok": True}
 
+
 @router.post("/{lease_id}/end", response_model=dict)
 def end_lease(lease_id: int, payload: dict, db: Session = Depends(get_db)):
     end_date_str = payload.get("end_date")
     try:
-        end_date = datetime.fromisoformat(end_date_str) if end_date_str else datetime.utcnow()
+        end_date = (
+            datetime.fromisoformat(end_date_str)
+            if end_date_str
+            else datetime.utcnow()
+        )
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid end_date format")
+
     lease = lease_crud.end_lease(db, lease_id, end_date)
     if not lease:
         raise HTTPException(status_code=404, detail="Lease not found")
-    return {"ok": True, "lease_id": lease.id, "ended": lease.end_date.isoformat()}
 
-@router.get("/me", response_model=List[LeaseOut])
-def my_leases(db: Session = Depends(get_db), current = Depends(get_current_user)):
-    role = (current or {}).get("role")
-    sub  = (current or {}).get("sub")
-    if not role or not sub:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    user_id = int(sub)
-    if role == "tenant":
-        return lease_crud.list_leases_for_tenant(db, user_id)
-    if role == "landlord":
-        return lease_crud.list_leases_for_landlord(db, user_id)
-    if role in ("property_manager", "manager"):
-        return lease_crud.list_leases_for_manager(db, user_id)
-    return []
+    return {
+        "ok": True,
+        "lease_id": lease.id,
+        "ended": lease.end_date.isoformat(),
+    }
+
 
 @router.get("/{lease_id}.pdf")
-def lease_pdf(lease_id: int, db: Session = Depends(get_db), current: dict = Depends(get_current_user)):
-    lease: models.Lease = db.query(models.Lease).filter(models.Lease.id == lease_id).first()
+def lease_pdf(
+    lease_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    lease: models.Lease = (
+        db.query(models.Lease)
+        .filter(models.Lease.id == lease_id)
+        .first()
+    )
     if not lease:
         raise HTTPException(status_code=404, detail="Lease not found")
 
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == lease.tenant_id).first()
-    unit = db.query(models.Unit).filter(models.Unit.id == lease.unit_id).first()
-    prop = db.query(models.Property).filter(models.Property.id == (unit.property_id if unit else 0)).first() if unit else None
-    landlord = db.query(models.Landlord).filter(models.Landlord.id == (prop.landlord_id if prop else 0)).first() if prop else None
+    tenant = (
+        db.query(models.Tenant)
+        .filter(models.Tenant.id == lease.tenant_id)
+        .first()
+    )
+    unit = (
+        db.query(models.Unit)
+        .filter(models.Unit.id == lease.unit_id)
+        .first()
+    )
+    prop = (
+        db.query(models.Property)
+        .filter(models.Property.id == (unit.property_id if unit else 0))
+        .first()
+        if unit
+        else None
+    )
+    landlord = (
+        db.query(models.Landlord)
+        .filter(models.Landlord.id == (prop.landlord_id if prop else 0))
+        .first()
+        if prop
+        else None
+    )
+
     if not tenant or not unit or not prop or not landlord:
         raise HTTPException(status_code=400, detail="Related data missing")
 
-    # simple authZ (tenant self; landlord of property; managers allowed)
-    role = current.get("role"); sub = int(current.get("sub", 0) or 0)
+    # Simple authorization
+    role = current.get("role")
+    sub = int(current.get("sub", 0) or 0)
+
     if role == "tenant" and tenant.id != sub:
         raise HTTPException(status_code=403, detail="Forbidden")
+
     if role == "landlord" and landlord.id != sub:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # PDF
+    # Managers/admins can pass for now
+    # You can tighten this later if needed.
+
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
-    x = 20 * mm; y = h - 25 * mm
+    x = 20 * mm
+    y = h - 25 * mm
 
-    c.setFont("Helvetica-Bold", 16); c.drawString(x, y, "Residential Lease Agreement")
-    y -= 8 * mm; c.setFont("Helvetica", 10); c.setFillColor(colors.grey)
-    c.drawString(x, y, "Generated by Property Manager"); c.setFillColor(colors.black)
-    y -= 6 * mm; c.setStrokeColor(colors.lightgrey); c.line(x, y, w - x, y); y -= 10 * mm
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(x, y, "Residential Lease Agreement")
 
-    c.setFont("Helvetica-Bold", 11); c.drawString(x, y, "Parties"); y -= 6 * mm
+    y -= 8 * mm
     c.setFont("Helvetica", 10)
-    c.drawString(x, y, f"Landlord: {landlord.name}  ({landlord.phone})"); y -= 6 * mm
-    c.drawString(x, y, f"Tenant:   {tenant.name}  ({tenant.phone})"); y -= 6 * mm
-    c.drawString(x, y, f"Tenant ID No.: {tenant.id_number or '-'}"); y -= 10 * mm
+    c.setFillColor(colors.grey)
+    c.drawString(x, y, "Generated by PropSmart PMS")
+    c.setFillColor(colors.black)
 
-    c.setFont("Helvetica-Bold", 11); c.drawString(x, y, "Premises"); y -= 6 * mm
-    c.setFont("Helvetica", 10)
-    c.drawString(x, y, f"Property: {prop.name} — {prop.address}  [Code: {prop.property_code}]"); y -= 6 * mm
-    c.drawString(x, y, f"Unit: {unit.number}"); y -= 10 * mm
+    y -= 6 * mm
+    c.setStrokeColor(colors.lightgrey)
+    c.line(x, y, w - x, y)
+    y -= 10 * mm
 
-    c.setFont("Helvetica-Bold", 11); c.drawString(x, y, "Term & Rent"); y -= 6 * mm
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x, y, "Parties")
+    y -= 6 * mm
+
     c.setFont("Helvetica", 10)
-    c.drawString(x, y, f"Start Date: {lease.start_date.strftime('%Y-%m-%d')}"); y -= 6 * mm
-    c.drawString(x, y, f"End Date:   {(lease.end_date.strftime('%Y-%m-%d') if lease.end_date else 'Open-ended')}"); y -= 6 * mm
+    c.drawString(x, y, f"Landlord: {landlord.name} ({landlord.phone})")
+    y -= 6 * mm
+    c.drawString(x, y, f"Tenant: {tenant.name} ({tenant.phone})")
+    y -= 6 * mm
+    c.drawString(x, y, f"Tenant ID No.: {tenant.id_number or '-'}")
+    y -= 10 * mm
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x, y, "Premises")
+    y -= 6 * mm
+
+    c.setFont("Helvetica", 10)
+    c.drawString(
+        x,
+        y,
+        f"Property: {prop.name} — {prop.address} [Code: {prop.property_code}]",
+    )
+    y -= 6 * mm
+    c.drawString(x, y, f"Unit: {unit.number}")
+    y -= 10 * mm
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x, y, "Term & Rent")
+    y -= 6 * mm
+
+    c.setFont("Helvetica", 10)
+    c.drawString(x, y, f"Start Date: {lease.start_date.strftime('%Y-%m-%d')}")
+    y -= 6 * mm
+    c.drawString(
+        x,
+        y,
+        f"End Date: {(lease.end_date.strftime('%Y-%m-%d') if lease.end_date else 'Open-ended')}",
+    )
+    y -= 6 * mm
     c.drawString(x, y, f"Monthly Rent: KES {float(lease.rent_amount):,.2f}")
 
-    c.showPage(); c.save()
-    pdf = buf.getvalue(); buf.close()
-    return Response(content=pdf, media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="lease_{lease_id}.pdf"'})
+    c.showPage()
+    c.save()
+
+    pdf = buf.getvalue()
+    buf.close()
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="lease_{lease_id}.pdf"'
+        },
+    )
+
+@router.post("/{lease_id}/accept-terms")
+def accept_terms(
+    lease_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    lease = db.query(models.Lease).filter(models.Lease.id == lease_id).first()
+    if not lease:
+        raise HTTPException(status_code=404, detail="Lease not found")
+
+    # Only tenant can accept
+    if current["role"] != "tenant" or int(current["sub"]) != lease.tenant_id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    lease.terms_accepted = True
+    lease.terms_accepted_at = datetime.utcnow()
+
+    db.commit()
+    return {"ok": True}
+
+@router.post("/{lease_id}/activate")
+def activate_lease(
+    lease_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    lease = db.query(models.Lease).filter(models.Lease.id == lease_id).first()
+    if not lease:
+        raise HTTPException(status_code=404, detail="Lease not found")
+
+    # Only tenant can activate after accepting
+    if current["role"] != "tenant" or int(current["sub"]) != lease.tenant_id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    if not lease.terms_accepted:
+        raise HTTPException(status_code=400, detail="Accept terms first")
+
+    lease.active = 1
+    db.commit()
+    return {"ok": True}
+

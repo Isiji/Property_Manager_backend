@@ -21,13 +21,13 @@ def handle_payment_success(db: Session, payment: models.Payment):
     landlord = property_.landlord
     manager = property_.manager
 
-    pdf_bytes, pdf_path, receipt_number = build_receipt_pdf(
-        payment,
-        tenant,
-        unit,
-        property_,
-        landlord,
-        manager,
+    _, pdf_path, receipt_number = build_receipt_pdf(
+        payment=payment,
+        tenant=tenant,
+        unit=unit,
+        property_=property_,
+        landlord=landlord,
+        manager=manager,
     )
 
     receipt = PaymentReceipt(

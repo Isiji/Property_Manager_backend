@@ -1,25 +1,38 @@
 from __future__ import annotations
+
+import os
+import uuid
 from io import BytesIO
 from datetime import datetime
-import uuid
-import os
+from typing import Optional
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from app import models
 
-
-RECEIPT_DIR = "storage/receipts"
+BASE_DIR = os.path.abspath(os.getcwd())
+RECEIPT_DIR = os.path.join(BASE_DIR, "storage", "receipts")
 os.makedirs(RECEIPT_DIR, exist_ok=True)
 
 
-def generate_receipt_number():
+def generate_receipt_number() -> str:
     return f"RCPT-{uuid.uuid4().hex[:10].upper()}"
 
 
-def build_receipt_pdf(payment, tenant, unit, property_, landlord, manager=None) -> tuple[bytes, str]:
+def _text_line(c: canvas.Canvas, x: float, y: float, text: str, size=11, bold=False):
+    c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+    c.drawString(x, y, text)
+
+
+def build_receipt_pdf(
+    payment,
+    tenant,
+    unit,
+    property_,
+    landlord: Optional[object] = None,
+    manager: Optional[object] = None,
+) -> tuple[bytes, str, str]:
     receipt_number = generate_receipt_number()
 
     file_name = f"{receipt_number}.pdf"
@@ -27,95 +40,84 @@ def build_receipt_pdf(payment, tenant, unit, property_, landlord, manager=None) 
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-
     w, h = A4
+
     left = 20 * mm
-    y = h - 25 * mm
+    top = h - 25 * mm
+    line = top
 
-    # HEADER
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(left, y, "PropSmart PMS")
-    y -= 10 * mm
+    # Header
+    _text_line(c, left, line, "PropSmart PMS", size=18, bold=True)
+    line -= 8 * mm
+    _text_line(c, left, line, "OFFICIAL PAYMENT RECEIPT", size=13, bold=True)
+    line -= 10 * mm
 
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(left, y, "PAYMENT RECEIPT")
-    y -= 10 * mm
+    # Receipt info
+    _text_line(c, left, line, f"Receipt No: {receipt_number}", bold=True)
+    line -= 6 * mm
+    _text_line(c, left, line, f"Issued At: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    line -= 10 * mm
 
-    # RECEIPT INFO
-    c.setFont("Helvetica", 11)
-    c.drawString(left, y, f"Receipt No: {receipt_number}")
-    y -= 6 * mm
+    # Property section
+    _text_line(c, left, line, "Property Details", size=12, bold=True)
+    line -= 6 * mm
+    _text_line(c, left, line, f"Property: {property_.name or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Property Code: {property_.property_code or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Address: {property_.address or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Unit: {unit.number or '-'}")
+    line -= 10 * mm
 
-    c.drawString(left, y, f"Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Period: {payment.period}")
-    y -= 10 * mm
-
-    # PAYMENT DETAILS
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(left, y, "Payment Details")
-    y -= 6 * mm
-
-    c.setFont("Helvetica", 11)
-    c.drawString(left, y, f"Amount: KES {payment.amount}")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Method: M-Pesa")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Transaction Code: {payment.reference or '-'}")
-    y -= 10 * mm
-
-    # TENANT
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(left, y, "Tenant Details")
-    y -= 6 * mm
-
-    c.setFont("Helvetica", 11)
-    c.drawString(left, y, f"{tenant.name} ({tenant.phone})")
-    y -= 10 * mm
-
-    # PROPERTY
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(left, y, "Property Details")
-    y -= 6 * mm
-
-    c.setFont("Helvetica", 11)
-    c.drawString(left, y, f"{property_.name}")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Unit: {unit.number}")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Property Code: {property_.property_code}")
-    y -= 6 * mm
-
-    c.drawString(left, y, f"Address: {property_.address}")
-    y -= 10 * mm
-
-    # OWNER / MANAGER
+    # Owner/agency section
+    _text_line(c, left, line, "Owner / Agency", size=12, bold=True)
+    line -= 6 * mm
     if landlord:
-        c.drawString(left, y, f"Landlord: {landlord.name}")
-        y -= 6 * mm
-
+        _text_line(c, left, line, f"Landlord: {getattr(landlord, 'name', '-')}")
+        line -= 6 * mm
     if manager:
-        c.drawString(left, y, f"Agency/Manager: {manager.name}")
-        y -= 6 * mm
+        manager_name = getattr(manager, "company_name", None) or getattr(manager, "name", "-")
+        _text_line(c, left, line, f"Agency / Manager: {manager_name}")
+        line -= 6 * mm
+    line -= 4 * mm
 
-    y -= 10 * mm
+    # Tenant section
+    _text_line(c, left, line, "Tenant Details", size=12, bold=True)
+    line -= 6 * mm
+    _text_line(c, left, line, f"Tenant: {tenant.name or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Phone: {tenant.phone or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Email: {getattr(tenant, 'email', None) or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"ID Number: {getattr(tenant, 'id_number', None) or '-'}")
+    line -= 10 * mm
 
-    c.drawString(left, y, "Thank you for your payment.")
-    y -= 6 * mm
+    # Payment section
+    _text_line(c, left, line, "Payment Details", size=12, bold=True)
+    line -= 6 * mm
+    _text_line(c, left, line, f"Amount Paid: KES {payment.amount}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Payment Method: M-Pesa")
+    line -= 6 * mm
+    _text_line(c, left, line, f"M-Pesa Ref: {payment.reference or '-'}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Paid Date: {(payment.paid_date.isoformat() if payment.paid_date else '-')}")
+    line -= 6 * mm
+    _text_line(c, left, line, f"Rent Period: {payment.period or '-'}")
+    line -= 10 * mm
 
-    c.setFont("Helvetica-Oblique", 9)
-    c.drawString(left, y, "Generated by PropSmart PMS")
+    # Footer
+    _text_line(c, left, line, "Thank you for your payment.", bold=True)
+    line -= 6 * mm
+    _text_line(c, left, line, "Generated by PropSmart PMS. This is a system-generated receipt.", size=9)
 
+    c.showPage()
     c.save()
 
     pdf_bytes = buf.getvalue()
 
-    # Save file
     with open(file_path, "wb") as f:
         f.write(pdf_bytes)
 
