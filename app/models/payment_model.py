@@ -1,4 +1,3 @@
-# app/models/payment_models.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -24,7 +23,7 @@ from app.database import Base
 class PaymentStatus(str, enum.Enum):
     pending = "pending"   # created / initiated, awaiting confirmation
     paid = "paid"         # fully paid / confirmed
-    overdue = "overdue"   # not used by STK itself, but useful for monthly tagging
+    overdue = "overdue"   # monthly tagging / overdue handling
 
 
 class ChargeStatus(str, enum.Enum):
@@ -44,27 +43,31 @@ class Payment(Base):
     # Links
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False, index=True)
-    lease_id = Column(Integer, ForeignKey("leases.id"), nullable=True, index=True)  # optional, but recommended
+    lease_id = Column(Integer, ForeignKey("leases.id"), nullable=True, index=True)
 
     # Accounting
     amount = Column(Numeric(12, 2), nullable=False)
 
     # Monthly tagging (used by UI to know if a month's rent is paid)
-    # Example: "2025-10"
+    # Example: "2026-03"
     period = Column(String(7), nullable=False, index=True)  # YYYY-MM
-    paid_date = Column(Date, nullable=True)  # actual paid day (YYYY-MM-DD)
+    paid_date = Column(Date, nullable=True)
 
     # Provider reference / receipt (M-Pesa receipt, bank ref, etc.)
     reference = Column(String(64), nullable=True, index=True)
+
+    # Daraja request tracking
+    merchant_request_id = Column(String(100), nullable=True, index=True)
+    checkout_request_id = Column(String(100), nullable=True, unique=True, index=True)
 
     # Status and timestamps
     status = Column(Enum(PaymentStatus), default=PaymentStatus.pending, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        # prevent duplicate payment rows for the same lease+month
         UniqueConstraint("lease_id", "period", name="uq_payments_lease_period"),
         Index("ix_payments_reference_not_null", "reference"),
+        Index("ix_payments_checkout_request_id_not_null", "checkout_request_id"),
     )
 
     # Relationships
@@ -87,7 +90,7 @@ class ServiceCharge(Base):
     description = Column(String, nullable=False)  # e.g. water, garbage, security
     amount = Column(Numeric(12, 2), nullable=False)
 
-    # Due date for the charge (not the payment date)
+    # Due date for the charge
     due_date = Column(Date, nullable=False)
 
     status = Column(Enum(ChargeStatus), default=ChargeStatus.unpaid, nullable=False)

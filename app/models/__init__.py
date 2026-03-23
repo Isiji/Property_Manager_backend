@@ -6,3 +6,4 @@ from .notification_model import *
 from .agency_models import *
 from .audit_log_model import *
 from .security_models import *
+from .receipt_model import *

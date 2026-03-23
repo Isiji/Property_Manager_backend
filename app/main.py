@@ -35,6 +35,7 @@ from app.routers import (
     admin_dashboard_router,
     payout_router,
     audit_log_router,
+    receipt_routes,
 )
 from app.services import reminder_service  # import the reminder scheduler
 from app.core.config import settings
@@ -161,6 +162,6 @@ app.include_router(property_manager_router.router)
 app.include_router(agency_router.router)
 app.include_router(admin_dashboard_router.router)
 app.include_router(audit_log_router.router)
-
+app. include_router(receipt_routes.router)
 # ✅ Start automatic reminders
 reminder_service.start_scheduler()
