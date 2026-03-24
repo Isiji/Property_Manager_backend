@@ -236,7 +236,7 @@ def register_user(data: RegisterUser, db: Session = Depends(get_db)):
 
             user = Tenant(
                 name=data.name.strip(),
-                phone=phone,
+                phone=normalize_ke_phone(phone),
                 email=email,
                 property_id=prop.id,
                 unit_id=unit.id,

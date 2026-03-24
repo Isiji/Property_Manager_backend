@@ -1,6 +1,5 @@
-# app/routers/tenant_router.py
 from datetime import date
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -10,16 +9,35 @@ from app.dependencies import get_db
 from app.schemas.tenant_schema import TenantCreate, TenantOut, TenantUpdate
 from app import models
 from app.crud import tenant as crud_tenant
+from app.utils.phone_utils import normalize_ke_phone
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
+
 
 @router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
     return crud_tenant.create_tenant(db, payload)
 
+
 @router.get("/", response_model=List[TenantOut])
 def list_tenants(db: Session = Depends(get_db)):
     return crud_tenant.get_tenants(db)
+
+
+@router.get("/by-phone", response_model=TenantOut)
+def get_by_phone(phone: str = Query(...), db: Session = Depends(get_db)):
+    normalized = normalize_ke_phone(phone)
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
+        )
+
+    t = crud_tenant.get_tenant_by_phone(db, normalized)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return t
+
 
 @router.get("/{tenant_id}", response_model=TenantOut)
 def get_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
@@ -28,7 +46,7 @@ def get_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return t
 
-# Full update
+
 @router.put("/{tenant_id}", response_model=TenantOut)
 def update_tenant_put(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
     t = crud_tenant.update_tenant(db, tenant_id, payload)
@@ -36,13 +54,14 @@ def update_tenant_put(tenant_id: int, payload: TenantUpdate, db: Session = Depen
         raise HTTPException(status_code=404, detail="Tenant not found")
     return t
 
-# Partial update (NEW)
+
 @router.patch("/{tenant_id}", response_model=TenantOut)
 def update_tenant_patch(tenant_id: int, payload: TenantUpdate, db: Session = Depends(get_db)):
     t = crud_tenant.update_tenant(db, tenant_id, payload)
     if not t:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return t
+
 
 @router.delete("/{tenant_id}", response_model=dict)
 def delete_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
@@ -51,24 +70,24 @@ def delete_tenant_route(tenant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return {"ok": True, "message": "Tenant deleted successfully"}
 
-# ------- find by phone (for assigning existing) -------
-@router.get("/by-phone", response_model=TenantOut)
-def get_by_phone(phone: str = Query(...), db: Session = Depends(get_db)):
-    t = crud_tenant.get_tenant_by_phone(db, phone)
-    if not t:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return t
 
-# ------- assign existing tenant to a unit -------
 class AssignExistingTenant(BaseModel):
     phone: str
     unit_id: int
     rent_amount: float
     start_date: date
 
+
 @router.post("/assign-existing", response_model=dict)
 def assign_existing(payload: AssignExistingTenant, db: Session = Depends(get_db)):
-    tenant = crud_tenant.get_tenant_by_phone(db, payload.phone)
+    normalized = normalize_ke_phone(payload.phone)
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
+        )
+
+    tenant = crud_tenant.get_tenant_by_phone(db, normalized)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -83,6 +102,7 @@ def assign_existing(payload: AssignExistingTenant, db: Session = Depends(get_db)
         rent_amount=payload.rent_amount,
         start_date=payload.start_date,
     )
+
     return {
         "ok": True,
         "lease_id": lease.id,

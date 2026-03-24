@@ -1,115 +1,221 @@
-from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
-from typing import Optional
+from __future__ import annotations
+
 from datetime import date
-from app import models, schemas
+from typing import Optional
 
-def get_tenant(db: Session, tenant_id: int) -> Optional[models.Tenant]:
-    return db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+from fastapi import HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
-def get_tenant_by_phone(db: Session, phone: str) -> Optional[models.Tenant]:
-    return db.query(models.Tenant).filter(models.Tenant.phone == phone).first()
+from app.models.user_models import Tenant
+from app.models.property_models import Unit, Lease
+from app.schemas.tenant_schema import TenantCreate, TenantUpdate
+from app.auth.password_utils import hash_password
+from app.utils.phone_utils import normalize_ke_phone
+
+
+def _clean_email(email: Optional[str]) -> Optional[str]:
+    if email is None:
+        return None
+    email = email.strip().lower()
+    return email or None
+
 
 def get_tenants(db: Session):
-    return db.query(models.Tenant).all()
+    return db.query(Tenant).order_by(Tenant.id.desc()).all()
 
-def create_tenant(db: Session, payload: schemas.TenantCreate) -> models.Tenant:
-    # Unique phone guard
-    existing = get_tenant_by_phone(db, payload.phone)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Tenant with phone {payload.phone} already exists (id={existing.id})"
+
+def get_tenant(db: Session, tenant_id: int):
+    return db.query(Tenant).filter(Tenant.id == tenant_id).first()
+
+
+def get_tenant_by_phone(db: Session, phone: str):
+    normalized = normalize_ke_phone(phone)
+    if not normalized:
+        return None
+    return db.query(Tenant).filter(Tenant.phone == normalized).first()
+
+
+def create_tenant(db: Session, payload: TenantCreate):
+    try:
+        normalized_phone = normalize_ke_phone(payload.phone)
+        if not normalized_phone:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
+            )
+
+        email = _clean_email(payload.email)
+
+        existing_phone = db.query(Tenant).filter(Tenant.phone == normalized_phone).first()
+        if existing_phone:
+            raise HTTPException(status_code=409, detail="Phone already registered for a tenant")
+
+        if email:
+            existing_email = db.query(Tenant).filter(func.lower(Tenant.email) == email).first()
+            if existing_email:
+                raise HTTPException(status_code=409, detail="Email already registered for a tenant")
+
+        unit = db.query(Unit).filter(Unit.id == payload.unit_id).first()
+        if not unit:
+            raise HTTPException(status_code=404, detail="Unit not found")
+
+        if unit.property_id != payload.property_id:
+            raise HTTPException(status_code=400, detail="Selected unit does not belong to the given property")
+
+        password_hash = hash_password(payload.password) if payload.password else None
+
+        tenant = Tenant(
+            name=payload.name.strip(),
+            phone=normalized_phone,
+            email=email,
+            property_id=payload.property_id,
+            unit_id=payload.unit_id,
+            password=password_hash,
+            id_number=(payload.id_number.strip() if payload.id_number else None),
         )
 
-    t = models.Tenant(
-        name=payload.name,
-        phone=payload.phone,
-        email=payload.email,
-        property_id=payload.property_id,
-        unit_id=payload.unit_id,
-        password=None if payload.password is None else payload.password,  # hash if needed
-        id_number=payload.id_number,  # <— NEW
-    )
-    db.add(t)
-    db.commit()
-    db.refresh(t)
-    return t
+        db.add(tenant)
+        db.commit()
+        db.refresh(tenant)
+        return tenant
 
-def update_tenant(db: Session, tenant_id: int, payload: schemas.TenantUpdate):
-    t = get_tenant(db, tenant_id)
-    if not t:
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def update_tenant(db: Session, tenant_id: int, payload: TenantUpdate):
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
         return None
 
-    data = payload.model_dump(exclude_unset=True)
+    try:
+        data = payload.model_dump(exclude_unset=True)
 
-    # If you hash passwords, do it here before setting.
-    # Example:
-    # if "password" in data and data["password"] is not None:
-    #     data["password"] = hash_password(data["password"])
+        if "name" in data and data["name"] is not None:
+            tenant.name = data["name"].strip()
 
-    for k, v in data.items():
-        setattr(t, k, v)
+        if "phone" in data and data["phone"] is not None:
+            normalized_phone = normalize_ke_phone(data["phone"])
+            if not normalized_phone:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Kenyan phone number. Use 07/01 or +254/254 format.",
+                )
 
-    db.commit()
-    db.refresh(t)
-    return t
+            existing = (
+                db.query(Tenant)
+                .filter(Tenant.phone == normalized_phone, Tenant.id != tenant_id)
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="Phone already registered for another tenant")
+
+            tenant.phone = normalized_phone
+
+        if "email" in data:
+            email = _clean_email(data["email"])
+            if email:
+                existing = (
+                    db.query(Tenant)
+                    .filter(func.lower(Tenant.email) == email, Tenant.id != tenant_id)
+                    .first()
+                )
+                if existing:
+                    raise HTTPException(status_code=409, detail="Email already registered for another tenant")
+            tenant.email = email
+
+        if "password" in data:
+            tenant.password = hash_password(data["password"]) if data["password"] else None
+
+        if "id_number" in data:
+            tenant.id_number = data["id_number"].strip() if data["id_number"] else None
+
+        if "property_id" in data and data["property_id"] is not None:
+            tenant.property_id = data["property_id"]
+
+        if "unit_id" in data and data["unit_id"] is not None:
+            unit = db.query(Unit).filter(Unit.id == data["unit_id"]).first()
+            if not unit:
+                raise HTTPException(status_code=404, detail="Unit not found")
+
+            if tenant.property_id and unit.property_id != tenant.property_id:
+                raise HTTPException(status_code=400, detail="Selected unit does not belong to tenant property")
+
+            tenant.unit_id = data["unit_id"]
+
+        db.commit()
+        db.refresh(tenant)
+        return tenant
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 def delete_tenant(db: Session, tenant_id: int) -> bool:
-    t = get_tenant(db, tenant_id)
-    if not t:
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
         return False
 
-    # Mark active lease inactive and set unit vacant
-    for lease in t.leases:
-        if lease.active == 1:
-            lease.active = 0
-            if lease.unit:
-                lease.unit.occupied = 0
+    try:
+        db.delete(tenant)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
-    db.delete(t)
-    db.commit()
-    return True
 
 def assign_existing_tenant_to_unit(
     db: Session,
-    tenant: models.Tenant,
-    unit: models.Unit,
+    tenant: Tenant,
+    unit: Unit,
     rent_amount: float,
     start_date: date,
-) -> models.Lease:
-    """
-    Assign an existing tenant to a (vacant) unit by creating an active lease.
-    Enforces: unit must be vacant, tenant must not already have an active lease.
-    Also updates tenant.unit_id so downstream queries are consistent.
-    """
-    # Guard: unit must be vacant
-    if unit.occupied == 1:
-        raise HTTPException(status_code=400, detail="Unit is already occupied")
+):
+    try:
+        if int(getattr(unit, "occupied", 0) or 0) == 1:
+            raise HTTPException(status_code=409, detail="Unit already occupied")
 
-    # Guard: tenant must not have an active lease already
-    active = (
-        db.query(models.Lease)
-        .filter(models.Lease.tenant_id == tenant.id, models.Lease.active == 1)
-        .first()
-    )
-    if active:
-        raise HTTPException(status_code=400, detail="Tenant already has an active lease")
+        active_lease = (
+            db.query(Lease)
+            .filter(Lease.tenant_id == tenant.id, Lease.active == 1)
+            .first()
+        )
+        if active_lease:
+            raise HTTPException(status_code=409, detail="Tenant already has an active lease")
 
-    # Keep model consistent
-    tenant.unit_id = unit.id
+        tenant.property_id = unit.property_id
+        tenant.unit_id = unit.id
 
-    lease = models.Lease(
-        tenant_id=tenant.id,
-        unit_id=unit.id,
-        start_date=start_date,
-        end_date=None,
-        rent_amount=rent_amount,
-        active=1,
-    )
-    unit.occupied = 1
+        lease = Lease(
+            tenant_id=tenant.id,
+            unit_id=unit.id,
+            start_date=start_date,
+            end_date=None,
+            rent_amount=rent_amount,
+            active=1,
+        )
+        db.add(lease)
 
-    db.add(lease)
-    db.commit()
-    db.refresh(lease)
-    return lease
+        unit.occupied = 1
+
+        db.commit()
+        db.refresh(lease)
+        db.refresh(tenant)
+        return lease
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
