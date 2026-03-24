@@ -66,6 +66,9 @@ class Lease(Base):
     end_date = Column(DateTime, nullable=True)
     rent_amount = Column(Numeric(10,2), nullable=False)
     active = Column(Integer, default=1)   # 1 = active, 0 = inactive
+    terms_text = Column(String, nullable=True)
+    terms_accepted = Column(Integer, default=0)  # 0 = false, 1 = true
+    terms_accepted_at = Column(DateTime, nullable=True)
 
     # Relationships
     tenant = relationship("Tenant", back_populates="leases")
