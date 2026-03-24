@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -45,7 +45,18 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Property Management API")
 
+from fastapi import Request
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(
+        f"➡️ {request.method} {request.url.path} | "
+        f"Origin={request.headers.get('origin')} | "
+        f"Referer={request.headers.get('referer')}"
+    )
+    response = await call_next(request)
+    print(f"⬅️ {response.status_code} {request.method} {request.url.path}")
+    return response
 def bootstrap_super_admin():
     """
     Create default super admin if none exists.
@@ -99,14 +110,23 @@ print("CORS_ORIGINS:", settings.CORS_ORIGINS),
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",  # In production, specify your frontend URL here (e.g., "https://yourdomain.com"),
+    allow_origins=[
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:63187",
+        "http://127.0.0.1:63187",
+        "https://bruce-nonimaginational-noel.ngrok-free.dev",
+    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],  # to allow filename in downloads
+    expose_headers=["Content-Disposition"],
 )
-
 
 @app.on_event("startup")
 def startup_event():

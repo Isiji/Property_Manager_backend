@@ -12,7 +12,7 @@ class PaymentReceipt(Base):
 
     receipt_number = Column(String, unique=True, index=True)
 
-    payment_id = Column(Integer, ForeignKey("payments.id"), nullable=False)
+    payment_id = Column(Integer, ForeignKey("payments.id"), nullable=False, index=True)
 
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
@@ -22,7 +22,12 @@ class PaymentReceipt(Base):
     manager_id = Column(Integer, ForeignKey("property_managers.id"), nullable=True)
 
     amount = Column(Numeric(12, 2), nullable=False)
-    period = Column(String(7), nullable=False)
+
+    # legacy display period
+    period = Column(String(7), nullable=True)
+
+    # breakdown for multi-month / partial receipts
+    allocations_json = Column(String, nullable=True)
 
     payment_reference = Column(String, nullable=True)
     payment_method = Column(String, default="M-Pesa")
@@ -32,7 +37,6 @@ class PaymentReceipt(Base):
     issued_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Relationships
     payment = relationship("Payment")
     tenant = relationship("Tenant")
     unit = relationship("Unit")
