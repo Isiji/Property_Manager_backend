@@ -1,3 +1,4 @@
+# app/models/payment_model.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -38,11 +39,9 @@ class Payment(Base):
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False, index=True)
     lease_id = Column(Integer, ForeignKey("leases.id"), nullable=True, index=True)
 
-    # actual transaction amount received
     amount = Column(Numeric(12, 2), nullable=False)
 
-    # keep a primary/display period for compatibility with older UI/history
-    # this becomes the first allocated period or selected start period
+    # Display/start period for this payment
     period = Column(String(7), nullable=False, index=True)
 
     paid_date = Column(Date, nullable=True)
@@ -54,9 +53,10 @@ class Payment(Base):
 
     payment_method = Column(String(40), nullable=True, default="M-Pesa")
 
-    # richer metadata for flexible allocation
     allocation_mode = Column(String(30), nullable=True, default="manual")
     selected_periods_json = Column(String, nullable=True)
+
+    # stores mpesa metadata json
     notes = Column(String, nullable=True)
 
     status = Column(Enum(PaymentStatus), default=PaymentStatus.pending, nullable=False)
@@ -90,7 +90,7 @@ class PaymentAllocation(Base):
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False, index=True)
     lease_id = Column(Integer, ForeignKey("leases.id"), nullable=True, index=True)
 
-    period = Column(String(7), nullable=False, index=True)  # YYYY-MM
+    period = Column(String(7), nullable=False, index=True)
     amount_applied = Column(Numeric(12, 2), nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

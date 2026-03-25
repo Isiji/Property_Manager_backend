@@ -1,3 +1,4 @@
+# app/services/payment_handler.py
 from __future__ import annotations
 
 import json
@@ -23,6 +24,21 @@ def _serialize_allocations(payment: models.Payment) -> str:
     return json.dumps(rows)
 
 
+def _payment_notes_dict(payment: models.Payment) -> dict:
+    raw = getattr(payment, "notes", None)
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
+
+
 def handle_payment_success(db: Session, payment: models.Payment):
     existing_receipt = (
         db.query(PaymentReceipt)
@@ -46,6 +62,8 @@ def handle_payment_success(db: Session, payment: models.Payment):
         landlord=landlord,
         manager=manager,
     )
+
+    notes_dict = _payment_notes_dict(payment)
 
     receipt = PaymentReceipt(
         receipt_number=receipt_number,

@@ -1,3 +1,4 @@
+# payment_router.py
 from __future__ import annotations
 
 import json
@@ -5,12 +6,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
 from app.dependencies import get_db, get_current_user
-from app.services.daraja_client import daraja_client
+from app.services.daraja_service import daraja_client
 from app.services.payment_handler import handle_payment_success
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -35,33 +36,27 @@ def _period_to_date(period: str) -> date:
         raise HTTPException(status_code=400, detail="Invalid period format. Use YYYY-MM")
 
 
-def _add_months(period: str, count: int) -> str:
-    d = _period_to_date(period)
-    month_index = (d.year * 12 + d.month - 1) + count
-    y = month_index // 12
-    m = (month_index % 12) + 1
-    return f"{y}-{str(m).zfill(2)}"
-
-
 def _normalize_periods(period: Optional[str], periods: Optional[List[str]]) -> List[str]:
-    result = []
+    result: List[str] = []
 
     if periods:
         for p in periods:
             if not p:
                 continue
+            p = str(p).strip()
             _period_to_date(p)
             result.append(p)
 
     if not result and period:
-        _period_to_date(period)
-        result.append(period)
+        p = str(period).strip()
+        _period_to_date(p)
+        result.append(p)
 
     if not result:
         result.append(_yyyymm(date.today()))
 
     seen = set()
-    ordered = []
+    ordered: List[str] = []
     for p in result:
         if p not in seen:
             seen.add(p)
@@ -100,6 +95,86 @@ def _sum_allocated_for_period(db: Session, lease_id: int, period: str) -> Decima
     return total
 
 
+def _to_msisdn254(phone: str) -> str:
+    p = phone.strip()
+    if p.startswith("+"):
+        p = p[1:]
+    if p.startswith("0"):
+        return "254" + p[1:]
+    if p.startswith("254"):
+        return p
+    if p.startswith("7") and len(p) == 9:
+        return "254" + p
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid phone format; expected 07XXXXXXXX or 2547XXXXXXXX"
+    )
+
+
+def _extract_callback_metadata_items(stk: Dict[str, Any]) -> Dict[str, Any]:
+    callback_metadata = stk.get("CallbackMetadata") or {}
+    items = callback_metadata.get("Item") or []
+
+    result: Dict[str, Any] = {}
+    for item in items:
+        name = item.get("Name")
+        value = item.get("Value")
+        if name:
+            result[name] = value
+    return result
+
+
+def _format_mpesa_transaction_date(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        dt_obj = datetime.strptime(s, "%Y%m%d%H%M%S")
+        return dt_obj.isoformat()
+    except Exception:
+        return s
+
+
+def _build_mpesa_notes(
+    *,
+    existing_notes: Optional[str],
+    result_code: Any,
+    result_desc: Any,
+    merchant_request_id: Any,
+    checkout_request_id: Any,
+    amount: Any = None,
+    receipt: Any = None,
+    phone: Any = None,
+    transaction_date: Any = None,
+) -> str:
+    data: Dict[str, Any] = {}
+
+    if existing_notes:
+        try:
+            maybe = json.loads(existing_notes)
+            if isinstance(maybe, dict):
+                data = maybe
+        except Exception:
+            data = {}
+
+    data.update({
+        "provider": "mpesa",
+        "result_code": result_code,
+        "result_desc": result_desc,
+        "merchant_request_id": merchant_request_id,
+        "checkout_request_id": checkout_request_id,
+        "mpesa_amount": float(amount) if amount is not None else None,
+        "mpesa_receipt_number": str(receipt) if receipt is not None else None,
+        "mpesa_phone_number": str(phone) if phone is not None else None,
+        "mpesa_transaction_date_raw": str(transaction_date) if transaction_date is not None else None,
+        "mpesa_transaction_date_iso": _format_mpesa_transaction_date(transaction_date),
+    })
+
+    return json.dumps(data)
+
+
 def allocate_payment(
     db: Session,
     *,
@@ -107,6 +182,15 @@ def allocate_payment(
     lease: models.Lease,
     periods: List[str],
 ):
+    # Prevent duplicate allocations on callback retries
+    existing_allocs = (
+        db.query(models.PaymentAllocation)
+        .filter(models.PaymentAllocation.payment_id == payment.id)
+        .all()
+    )
+    if existing_allocs:
+        return existing_allocs
+
     rent = _safe_decimal(lease.rent_amount)
     remaining = _safe_decimal(payment.amount)
     created = []
@@ -135,7 +219,7 @@ def allocate_payment(
         created.append(alloc)
         remaining -= apply_amt
 
-    # If payment exceeds selected periods, keep forward credit on last selected period
+    # If extra money remains, put forward credit on last selected period
     if remaining > 0 and periods:
         alloc = models.PaymentAllocation(
             payment_id=payment.id,
@@ -165,6 +249,10 @@ def record_payment(
     if amount is None:
         raise HTTPException(status_code=400, detail="amount is required")
 
+    amount_dec = _safe_decimal(amount)
+    if amount_dec <= 0:
+        raise HTTPException(status_code=400, detail="amount must be greater than 0")
+
     lease = _get_lease_or_404(db, int(lease_id))
     periods = _normalize_periods(payload.get("period"), payload.get("periods"))
 
@@ -184,7 +272,7 @@ def record_payment(
         tenant_id=lease.tenant_id,
         unit_id=lease.unit_id,
         lease_id=lease.id,
-        amount=_safe_decimal(amount),
+        amount=amount_dec,
         period=periods[0],
         paid_date=paid_date_value,
         reference=payload.get("reference"),
@@ -244,6 +332,10 @@ def initiate_mpesa(
     if amount is None:
         raise HTTPException(status_code=400, detail="amount is required")
 
+    amount_dec = _safe_decimal(amount)
+    if amount_dec <= 0:
+        raise HTTPException(status_code=400, detail="amount must be greater than 0")
+
     lease = _get_lease_or_404(db, int(lease_id))
     tenant = lease.tenant
     unit = lease.unit
@@ -251,25 +343,36 @@ def initiate_mpesa(
 
     periods = _normalize_periods(payload.get("period"), payload.get("periods"))
 
-    msisdn = phone or getattr(tenant, "phone", None)
-    if not msisdn:
+    msisdn_raw = phone or getattr(tenant, "phone", None)
+    if not msisdn_raw:
         raise HTTPException(status_code=400, detail="Phone number is required")
+
+    msisdn = _to_msisdn254(msisdn_raw)
+
+    role = current.get("role")
+    sub = int(current.get("sub", 0) or 0)
+    if role == "tenant" and lease.tenant_id != sub:
+        raise HTTPException(status_code=403, detail="Not your lease")
 
     account_ref = getattr(property_, "property_code", None) or f"LEASE{lease.id}"
     description = f"Rent payment {periods[0]}"
 
-    stk = daraja_client.initiate_stk_push(
-        phone=msisdn.replace("+", ""),
-        amount=float(amount),
-        account_ref=account_ref,
-        description=description,
-    )
+    try:
+        stk = daraja_client.initiate_stk_push(
+            phone=msisdn,
+            amount=float(amount_dec),
+            account_ref=account_ref,
+            description=description,
+        )
+    except Exception:
+        db.rollback()
+        raise
 
     payment = models.Payment(
         tenant_id=lease.tenant_id,
         unit_id=lease.unit_id,
         lease_id=lease.id,
-        amount=_safe_decimal(amount),
+        amount=amount_dec,
         period=periods[0],
         paid_date=None,
         reference=None,
@@ -291,5 +394,174 @@ def initiate_mpesa(
         "message": stk.get("CustomerMessage") or "STK push initiated",
         "payment_id": payment.id,
         "checkout_request_id": payment.checkout_request_id,
+        "merchant_request_id": payment.merchant_request_id,
         "periods": periods,
+        "amount": float(payment.amount),
+    }
+
+
+@router.post("/webhooks/daraja")
+async def daraja_callback(
+    data: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    stk = data.get("Body", {}).get("stkCallback", {})
+    if not stk:
+        return {
+            "ResultCode": 0,
+            "ResultDesc": "No stkCallback in payload",
+        }
+
+    result_code = stk.get("ResultCode", 1)
+    result_desc = stk.get("ResultDesc", "Unknown callback response")
+    merchant_request_id = stk.get("MerchantRequestID")
+    checkout_request_id = stk.get("CheckoutRequestID")
+
+    items = _extract_callback_metadata_items(stk)
+    amount = items.get("Amount")
+    receipt = items.get("MpesaReceiptNumber")
+    phone = items.get("PhoneNumber")
+    transaction_date = items.get("TransactionDate")
+
+    if not checkout_request_id:
+        return {
+            "ResultCode": 0,
+            "ResultDesc": "Missing CheckoutRequestID in callback",
+        }
+
+    payment = (
+        db.query(models.Payment)
+        .options(
+            joinedload(models.Payment.allocations),
+            joinedload(models.Payment.tenant),
+            joinedload(models.Payment.unit).joinedload(models.Unit.property),
+        )
+        .filter(models.Payment.checkout_request_id == checkout_request_id)
+        .first()
+    )
+
+    if payment is None and merchant_request_id:
+        payment = (
+            db.query(models.Payment)
+            .options(
+                joinedload(models.Payment.allocations),
+                joinedload(models.Payment.tenant),
+                joinedload(models.Payment.unit).joinedload(models.Unit.property),
+            )
+            .filter(models.Payment.merchant_request_id == merchant_request_id)
+            .order_by(models.Payment.created_at.desc())
+            .first()
+        )
+
+    if payment is None:
+        return {
+            "ResultCode": 0,
+            "ResultDesc": "No matching payment found",
+        }
+
+    if payment.status == models.PaymentStatus.paid:
+        return {
+            "ResultCode": 0,
+            "ResultDesc": "Payment already processed",
+        }
+
+    if result_code != 0:
+        payment.status = models.PaymentStatus.failed
+        payment.notes = _build_mpesa_notes(
+            existing_notes=payment.notes,
+            result_code=result_code,
+            result_desc=result_desc,
+            merchant_request_id=merchant_request_id,
+            checkout_request_id=checkout_request_id,
+            amount=amount,
+            receipt=receipt,
+            phone=phone,
+            transaction_date=transaction_date,
+        )
+        db.add(payment)
+        db.commit()
+
+        return {
+            "ResultCode": 0,
+            "ResultDesc": "Failure callback processed",
+        }
+
+    if amount is not None:
+        payment.amount = _safe_decimal(amount)
+
+    if receipt:
+        payment.reference = str(receipt)
+
+    if merchant_request_id and not payment.merchant_request_id:
+        payment.merchant_request_id = merchant_request_id
+
+    payment.status = models.PaymentStatus.paid
+    payment.paid_date = date.today()
+    payment.notes = _build_mpesa_notes(
+        existing_notes=payment.notes,
+        result_code=result_code,
+        result_desc=result_desc,
+        merchant_request_id=merchant_request_id,
+        checkout_request_id=checkout_request_id,
+        amount=amount,
+        receipt=receipt,
+        phone=phone,
+        transaction_date=transaction_date,
+    )
+
+    periods: List[str] = []
+    if payment.selected_periods_json:
+        try:
+            maybe = json.loads(payment.selected_periods_json)
+            if isinstance(maybe, list):
+                periods = [str(x) for x in maybe if str(x).strip()]
+        except Exception:
+            periods = []
+
+    if not periods and payment.period:
+        periods = [payment.period]
+
+    lease = _get_lease_or_404(db, payment.lease_id)
+
+    allocate_payment(
+        db,
+        payment=payment,
+        lease=lease,
+        periods=periods,
+    )
+
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    payment = (
+        db.query(models.Payment)
+        .options(
+            joinedload(models.Payment.allocations),
+            joinedload(models.Payment.tenant),
+            joinedload(models.Payment.unit).joinedload(models.Unit.property),
+        )
+        .filter(models.Payment.id == payment.id)
+        .first()
+    )
+
+    try:
+        receipt_obj = handle_payment_success(db, payment)
+    except Exception:
+        receipt_obj = None
+
+    return {
+        "ResultCode": 0,
+        "ResultDesc": "Success callback processed",
+        "ok": True,
+        "processed": True,
+        "payment_id": payment.id,
+        "receipt_id": receipt_obj.id if receipt_obj else None,
+        "receipt_number": receipt_obj.receipt_number if receipt_obj else None,
+        "payment_reference": payment.reference,
+        "checkout_request_id": checkout_request_id,
+        "merchant_request_id": merchant_request_id,
+        "phone_number": phone,
+        "transaction_date": transaction_date,
+        "amount": float(payment.amount or 0),
     }

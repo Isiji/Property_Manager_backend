@@ -1,5 +1,7 @@
+# tenant_portal_router.py
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -113,21 +115,35 @@ def _period_status(expected: float, received: float) -> str:
     return "credit"
 
 
+def _notes_to_dict(raw: Any) -> Dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
 def _build_period_suggestions(db: Session, lease: models.Lease) -> Dict[str, Any]:
     rent_amount = float(lease.rent_amount or 0)
     start_period = _yyyymm(lease.start_date.date() if isinstance(lease.start_date, datetime) else lease.start_date)
     current_period = _yyyymm(date.today())
 
-    # build from lease start to 6 months ahead
     periods: List[str] = []
     p = start_period
     guard = 0
     while guard < 60:
-        periods.append(p)
-        if p == _add_months(current_period, 6):
-            break
-        p = _add_months(p, 1)
-        guard += 1
+      periods.append(p)
+      if p == _add_months(current_period, 6):
+          break
+      p = _add_months(p, 1)
+      guard += 1
 
     rows: List[Dict[str, Any]] = []
     unpaid_periods: List[str] = []
@@ -241,18 +257,26 @@ def tenant_payments(
 
     rows = (
         db.query(models.Payment)
-        .options(joinedload(models.Payment.allocations))
+        .options(
+            joinedload(models.Payment.allocations),
+            joinedload(models.Payment.unit).joinedload(models.Unit.property),
+            joinedload(models.Payment.lease),
+        )
         .filter(models.Payment.tenant_id == current.id)
-        .order_by(models.Payment.created_at.desc())
+        .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
         .all()
     )
 
     if not rows:
         rows = (
             db.query(models.Payment)
-            .options(joinedload(models.Payment.allocations))
+            .options(
+                joinedload(models.Payment.allocations),
+                joinedload(models.Payment.unit).joinedload(models.Unit.property),
+                joinedload(models.Payment.lease),
+            )
             .filter(models.Payment.lease_id.in_(lease_ids))
-            .order_by(models.Payment.created_at.desc())
+            .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
             .all()
         )
 
@@ -268,12 +292,19 @@ def tenant_payments(
         out.append({
             "id": p.id,
             "lease_id": p.lease_id,
+            "tenant_id": p.tenant_id,
+            "unit_id": p.unit_id,
             "period": p.period,
             "amount": float(p.amount or 0),
             "paid_date": p.paid_date.isoformat() if p.paid_date else None,
             "reference": getattr(p, "reference", None),
             "status": p.status.value if hasattr(p.status, "value") else str(p.status),
             "payment_method": getattr(p, "payment_method", None),
+            "allocation_mode": getattr(p, "allocation_mode", None),
+            "selected_periods_json": getattr(p, "selected_periods_json", None),
+            "merchant_request_id": getattr(p, "merchant_request_id", None),
+            "checkout_request_id": getattr(p, "checkout_request_id", None),
+            "notes": _notes_to_dict(getattr(p, "notes", None)),
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "allocations": allocations,
         })

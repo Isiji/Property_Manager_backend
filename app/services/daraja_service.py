@@ -1,3 +1,4 @@
+# app/services/daraja_service.py
 from __future__ import annotations
 
 import base64
@@ -13,19 +14,11 @@ from app.core.config import settings
 class DarajaClient:
     """
     M-Pesa Daraja Client (STK Push)
-    Production-ready version.
-
-    Requirements in .env:
-    - DARAJA_BASE_URL
-    - DARAJA_CONSUMER_KEY
-    - DARAJA_CONSUMER_SECRET
-    - DARAJA_LNM_SHORTCODE
-    - DARAJA_LNM_PASSKEY
-    - DARAJA_CALLBACK_URL
+    Single active implementation for the app.
     """
 
     def __init__(self) -> None:
-        self.base = settings.DARAJA_BASE_URL.rstrip("/")
+        self.base = (settings.DARAJA_BASE_URL or "").rstrip("/")
         self.consumer_key = settings.DARAJA_CONSUMER_KEY
         self.consumer_secret = settings.DARAJA_CONSUMER_SECRET
         self.shortcode = settings.DARAJA_LNM_SHORTCODE
@@ -42,22 +35,19 @@ class DarajaClient:
         ]):
             raise RuntimeError("Daraja config is incomplete")
 
-    # -------------------------
-    # AUTH
-    # -------------------------
     def _access_token(self) -> str:
         url = f"{self.base}/oauth/v1/generate?grant_type=client_credentials"
 
         response = requests.get(
             url,
             auth=(self.consumer_key, self.consumer_secret),
-            timeout=20
+            timeout=20,
         )
 
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"Daraja OAuth failed: {response.text}"
+                detail=f"Daraja OAuth failed: {response.text}",
             )
 
         data = response.json()
@@ -66,14 +56,11 @@ class DarajaClient:
         if not token:
             raise HTTPException(
                 status_code=502,
-                detail="Missing access_token from Daraja"
+                detail="Missing access_token from Daraja",
             )
 
         return token
 
-    # -------------------------
-    # HELPERS
-    # -------------------------
     @staticmethod
     def _timestamp() -> str:
         return dt.datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -82,9 +69,6 @@ class DarajaClient:
         raw = f"{self.shortcode}{self.passkey}{timestamp}".encode("utf-8")
         return base64.b64encode(raw).decode("utf-8")
 
-    # -------------------------
-    # STK PUSH
-    # -------------------------
     def initiate_stk_push(
         self,
         *,
@@ -93,7 +77,6 @@ class DarajaClient:
         account_ref: str,
         description: str,
     ) -> Dict[str, Any]:
-
         timestamp = self._timestamp()
         password = self._password(timestamp)
         token = self._access_token()
@@ -105,7 +88,7 @@ class DarajaClient:
             "Password": password,
             "Timestamp": timestamp,
             "TransactionType": "CustomerPayBillOnline",
-            "Amount": int(amount),
+            "Amount": int(round(float(amount))),
             "PartyA": int(phone),
             "PartyB": int(self.shortcode),
             "PhoneNumber": int(phone),
@@ -123,7 +106,7 @@ class DarajaClient:
             url,
             json=payload,
             headers=headers,
-            timeout=30
+            timeout=30,
         )
 
         data = response.json() if response.content else {}
@@ -131,11 +114,10 @@ class DarajaClient:
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail={"daraja_error": data}
+                detail={"daraja_error": data},
             )
 
         return data
 
 
-# Singleton instance
 daraja_client = DarajaClient()
