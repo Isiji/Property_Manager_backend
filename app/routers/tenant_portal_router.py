@@ -432,3 +432,88 @@ def tenant_profile(current: models.Tenant = Depends(get_current_tenant)) -> Dict
 @router.post("/pay")
 def pay_this_month(current: models.Tenant = Depends(get_current_tenant)) -> Dict[str, Any]:
     return {"message": "Payment initiation stubbed. Integrate with your PSP here."}
+
+
+def _get_active_lease_for_tenant(db: Session, tenant_id: int) -> Optional[models.Lease]:
+    return (
+        db.query(models.Lease)
+        .options(
+            joinedload(models.Lease.unit).joinedload(models.Unit.property),
+        )
+        .filter(models.Lease.tenant_id == tenant_id)
+        .filter(models.Lease.active == 1)
+        .order_by(models.Lease.id.desc())
+        .first()
+    )
+
+
+@router.get("/overview")
+def tenant_overview(
+    current: models.Tenant = Depends(get_current_tenant),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    active_lease: Optional[models.Lease] = _get_active_lease_for_tenant(db, current.id)
+
+    unit_info: Dict[str, Any] = {}
+    lease_info: Dict[str, Any] = {}
+    this_month: Dict[str, Any] = {"expected": 0, "received": 0, "balance": 0, "paid": False}
+    planner: Dict[str, Any] = {"rows": [], "suggested_periods": [], "prompt": ""}
+
+    if active_lease:
+        unit = active_lease.unit
+
+        # Source of truth remains lease rent.
+        # If you want tenant dashboard to reflect unit rent instantly,
+        # change this line to use unit.rent_amount instead.
+        effective_rent = float(active_lease.rent_amount or 0)
+
+        unit_info = {
+            "id": unit.id if unit else None,
+            "number": getattr(unit, "number", None),
+            "property_id": getattr(unit, "property_id", None),
+            "property_name": getattr(unit.property, "name", None) if unit and unit.property else None,
+            "unit_rent_amount": float(getattr(unit, "rent_amount", 0) or 0) if unit else 0,
+        }
+
+        lease_info = {
+            "id": active_lease.id,
+            "rent_amount": effective_rent,
+            "start_date": active_lease.start_date.date().isoformat()
+            if isinstance(active_lease.start_date, datetime)
+            else active_lease.start_date.isoformat(),
+            "end_date": active_lease.end_date.date().isoformat()
+            if isinstance(active_lease.end_date, datetime) and active_lease.end_date
+            else (active_lease.end_date.isoformat() if active_lease.end_date else None),
+            "active": int(active_lease.active),
+        }
+
+        period = _yyyymm(date.today())
+        expected = effective_rent
+        received = _sum_allocated_for_period(db, active_lease.id, period)
+        balance = round(expected - received, 2)
+
+        this_month = {
+            "period": period,
+            "expected": expected,
+            "received": received,
+            "balance": balance if balance > 0 else 0,
+            "paid": received >= expected and expected > 0,
+            "status": _period_status(expected, received),
+        }
+
+        # Make planner also use the same active lease
+        planner = _build_period_suggestions(db, active_lease)
+
+    return {
+        "tenant": {
+            "id": current.id,
+            "name": current.name,
+            "phone": current.phone,
+            "email": current.email,
+            "id_number": getattr(current, "id_number", None),
+        },
+        "unit": unit_info,
+        "lease": lease_info,
+        "this_month": this_month,
+        "planner": planner,
+    }

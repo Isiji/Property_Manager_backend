@@ -119,6 +119,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:63187",
         "http://127.0.0.1:63187",
+        "http://127.0.0.1:4040",
+
         "https://bruce-nonimaginational-noel.ngrok-free.dev",
     ],
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
