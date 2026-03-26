@@ -39,7 +39,7 @@ def _normalize_periods(period: Optional[str], periods: Optional[List[str]]) -> L
     result: List[str] = []
 
     if periods:
-        for p in periods:
+      for p in periods:
             if not p:
                 continue
             p = str(p).strip()
@@ -92,6 +92,29 @@ def _sum_allocated_for_period(db: Session, lease_id: int, period: str) -> Decima
     for a in allocations:
         total += _safe_decimal(a.amount_applied)
     return total
+
+
+def _period_balance(db: Session, lease: models.Lease, period: str) -> Decimal:
+    rent = _safe_decimal(lease.rent_amount)
+    already_paid = _sum_allocated_for_period(db, lease.id, period)
+    balance = rent - already_paid
+    if balance < Decimal("0"):
+        return Decimal("0")
+    return balance
+
+
+def _validate_periods_not_fully_paid(db: Session, lease: models.Lease, periods: List[str]) -> None:
+    fully_paid: List[str] = []
+    for period in periods:
+        if _period_balance(db, lease, period) <= Decimal("0"):
+            fully_paid.append(period)
+
+    if fully_paid:
+        joined = ", ".join(fully_paid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"The following month(s) are already fully paid: {joined}. Choose another month."
+        )
 
 
 def _to_msisdn254(phone: str) -> str:
@@ -147,6 +170,7 @@ def _build_mpesa_notes(
     receipt: Any = None,
     phone: Any = None,
     transaction_date: Any = None,
+    unapplied_amount: Any = None,
 ) -> str:
     data: Dict[str, Any] = {}
 
@@ -169,6 +193,7 @@ def _build_mpesa_notes(
         "mpesa_phone_number": str(phone) if phone is not None else None,
         "mpesa_transaction_date_raw": str(transaction_date) if transaction_date is not None else None,
         "mpesa_transaction_date_iso": _format_mpesa_transaction_date(transaction_date),
+        "unapplied_amount": float(unapplied_amount) if unapplied_amount is not None else None,
     })
 
     return json.dumps(data)
@@ -180,16 +205,19 @@ def allocate_payment(
     payment: models.Payment,
     lease: models.Lease,
     periods: List[str],
-):
+) -> Dict[str, Any]:
     existing_allocs = (
         db.query(models.PaymentAllocation)
         .filter(models.PaymentAllocation.payment_id == payment.id)
         .all()
     )
     if existing_allocs:
-        return existing_allocs
+        total_existing = sum((_safe_decimal(a.amount_applied) for a in existing_allocs), Decimal("0"))
+        return {
+            "allocations": existing_allocs,
+            "remaining": _safe_decimal(payment.amount) - total_existing,
+        }
 
-    rent = _safe_decimal(lease.rent_amount)
     remaining = _safe_decimal(payment.amount)
     created = []
 
@@ -197,9 +225,7 @@ def allocate_payment(
         if remaining <= 0:
             break
 
-        already_paid = _sum_allocated_for_period(db, lease.id, period)
-        balance = rent - already_paid
-
+        balance = _period_balance(db, lease, period)
         if balance <= 0:
             continue
 
@@ -217,19 +243,34 @@ def allocate_payment(
         created.append(alloc)
         remaining -= apply_amt
 
-    if remaining > 0 and periods:
-        alloc = models.PaymentAllocation(
+    # keep excess as explicit credit row instead of silently overpaying a cleared month
+    if remaining > 0:
+        credit_alloc = models.PaymentAllocation(
             payment_id=payment.id,
             tenant_id=payment.tenant_id,
             unit_id=payment.unit_id,
             lease_id=payment.lease_id,
-            period=periods[-1],
+            period="CREDIT",
             amount_applied=remaining,
         )
-        db.add(alloc)
-        created.append(alloc)
+        db.add(credit_alloc)
+        created.append(credit_alloc)
 
-    return created
+    return {
+        "allocations": created,
+        "remaining": remaining,
+    }
+
+
+def _serialize_payment_response(payment: models.Payment, periods: List[str], receipt_obj=None) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "payment_id": payment.id,
+        "receipt_id": receipt_obj.id if receipt_obj else None,
+        "receipt_number": receipt_obj.receipt_number if receipt_obj else None,
+        "periods": periods,
+        "amount": float(payment.amount or 0),
+    }
 
 
 @router.post("/record")
@@ -252,6 +293,7 @@ def record_payment(
 
     lease = _get_lease_or_404(db, int(lease_id))
     periods = _normalize_periods(payload.get("period"), payload.get("periods"))
+    _validate_periods_not_fully_paid(db, lease, periods)
 
     paid_date_raw = payload.get("paid_date")
     if paid_date_raw:
@@ -283,11 +325,24 @@ def record_payment(
     db.add(payment)
     db.flush()
 
-    allocate_payment(
+    alloc_result = allocate_payment(
         db,
         payment=payment,
         lease=lease,
         periods=periods,
+    )
+
+    payment.notes = _build_mpesa_notes(
+        existing_notes=payment.notes,
+        result_code=0,
+        result_desc="Manual payment recorded",
+        merchant_request_id=None,
+        checkout_request_id=None,
+        amount=payment.amount,
+        receipt=payment.reference,
+        phone=None,
+        transaction_date=None,
+        unapplied_amount=alloc_result["remaining"],
     )
 
     db.commit()
@@ -304,14 +359,7 @@ def record_payment(
     )
 
     receipt = handle_payment_success(db, payment)
-
-    return {
-        "ok": True,
-        "payment_id": payment.id,
-        "receipt_id": receipt.id if receipt else None,
-        "receipt_number": receipt.receipt_number if receipt else None,
-        "periods": periods,
-    }
+    return _serialize_payment_response(payment, periods, receipt)
 
 
 @router.post("/mpesa/initiate")
@@ -339,6 +387,7 @@ def initiate_mpesa(
     property_ = unit.property if unit else None
 
     periods = _normalize_periods(payload.get("period"), payload.get("periods"))
+    _validate_periods_not_fully_paid(db, lease, periods)
 
     msisdn_raw = phone or getattr(tenant, "phone", None)
     if not msisdn_raw:
@@ -474,6 +523,7 @@ async def daraja_callback(
             receipt=receipt,
             phone=phone,
             transaction_date=transaction_date,
+            unapplied_amount=None,
         )
         db.add(payment)
         db.commit()
@@ -494,17 +544,6 @@ async def daraja_callback(
 
     payment.status = models.PaymentStatus.paid
     payment.paid_date = date.today()
-    payment.notes = _build_mpesa_notes(
-        existing_notes=payment.notes,
-        result_code=result_code,
-        result_desc=result_desc,
-        merchant_request_id=merchant_request_id,
-        checkout_request_id=checkout_request_id,
-        amount=amount,
-        receipt=receipt,
-        phone=phone,
-        transaction_date=transaction_date,
-    )
 
     periods: List[str] = []
     if payment.selected_periods_json:
@@ -520,11 +559,24 @@ async def daraja_callback(
 
     lease = _get_lease_or_404(db, payment.lease_id)
 
-    allocate_payment(
+    alloc_result = allocate_payment(
         db,
         payment=payment,
         lease=lease,
         periods=periods,
+    )
+
+    payment.notes = _build_mpesa_notes(
+        existing_notes=payment.notes,
+        result_code=result_code,
+        result_desc=result_desc,
+        merchant_request_id=merchant_request_id,
+        checkout_request_id=checkout_request_id,
+        amount=amount,
+        receipt=receipt,
+        phone=phone,
+        transaction_date=transaction_date,
+        unapplied_amount=alloc_result["remaining"],
     )
 
     db.add(payment)
