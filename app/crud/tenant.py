@@ -1,6 +1,7 @@
+# app/crud/tenant.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from typing import Optional
 
 from fastapi import HTTPException
@@ -19,6 +20,23 @@ def _clean_email(email: Optional[str]) -> Optional[str]:
         return None
     email = email.strip().lower()
     return email or None
+
+
+def _start_of_day(dt: date) -> datetime:
+    return datetime.combine(dt, time.min)
+
+
+def _recompute_unit_occupied(db: Session, unit_id: int) -> None:
+    unit = db.query(Unit).filter(Unit.id == unit_id).first()
+    if not unit:
+        return
+
+    active_exists = (
+        db.query(Lease)
+        .filter(Lease.unit_id == unit_id, Lease.active == 1)
+        .first()
+    )
+    unit.occupied = 1 if active_exists else 0
 
 
 def get_tenants(db: Session):
@@ -49,7 +67,10 @@ def create_tenant(db: Session, payload: TenantCreate):
 
         existing_phone = db.query(Tenant).filter(Tenant.phone == normalized_phone).first()
         if existing_phone:
-            raise HTTPException(status_code=409, detail="Phone already registered for a tenant")
+            raise HTTPException(
+                status_code=409,
+                detail="Phone already registered for a tenant. Use assign-existing for this tenant.",
+            )
 
         if email:
             existing_email = db.query(Tenant).filter(func.lower(Tenant.email) == email).first()
@@ -63,19 +84,41 @@ def create_tenant(db: Session, payload: TenantCreate):
         if unit.property_id != payload.property_id:
             raise HTTPException(status_code=400, detail="Selected unit does not belong to the given property")
 
+        active_for_unit = (
+            db.query(Lease)
+            .filter(Lease.unit_id == payload.unit_id, Lease.active == 1)
+            .first()
+        )
+        if active_for_unit:
+            raise HTTPException(status_code=409, detail="Unit already occupied")
+
         password_hash = hash_password(payload.password) if payload.password else None
 
         tenant = Tenant(
             name=payload.name.strip(),
             phone=normalized_phone,
             email=email,
-            property_id=payload.property_id,
-            unit_id=payload.unit_id,
+            property_id=payload.property_id,  # keep latest/current for backward compatibility
+            unit_id=payload.unit_id,          # keep latest/current for backward compatibility
             password=password_hash,
             id_number=(payload.id_number.strip() if payload.id_number else None),
         )
 
         db.add(tenant)
+        db.flush()
+
+        lease = Lease(
+            tenant_id=tenant.id,
+            unit_id=payload.unit_id,
+            start_date=datetime.utcnow(),
+            end_date=None,
+            rent_amount=unit.rent_amount,
+            active=1,
+        )
+        db.add(lease)
+
+        _recompute_unit_occupied(db, payload.unit_id)
+
         db.commit()
         db.refresh(tenant)
         return tenant
@@ -185,28 +228,32 @@ def assign_existing_tenant_to_unit(
         if int(getattr(unit, "occupied", 0) or 0) == 1:
             raise HTTPException(status_code=409, detail="Unit already occupied")
 
-        active_lease = (
+        active_for_unit = (
             db.query(Lease)
-            .filter(Lease.tenant_id == tenant.id, Lease.active == 1)
+            .filter(Lease.unit_id == unit.id, Lease.active == 1)
             .first()
         )
-        if active_lease:
-            raise HTTPException(status_code=409, detail="Tenant already has an active lease")
+        if active_for_unit:
+            raise HTTPException(status_code=409, detail="Unit already has an active lease")
 
+        # IMPORTANT:
+        # Allow the same tenant to have multiple active leases.
+        # We only update these two fields as the latest/current assignment
+        # for backward compatibility with old screens.
         tenant.property_id = unit.property_id
         tenant.unit_id = unit.id
 
         lease = Lease(
             tenant_id=tenant.id,
             unit_id=unit.id,
-            start_date=start_date,
+            start_date=_start_of_day(start_date),
             end_date=None,
             rent_amount=rent_amount,
             active=1,
         )
         db.add(lease)
 
-        unit.occupied = 1
+        _recompute_unit_occupied(db, unit.id)
 
         db.commit()
         db.refresh(lease)

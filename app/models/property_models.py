@@ -1,3 +1,4 @@
+# app/models/property_models.py
 from sqlalchemy import Column, Numeric, Integer, String, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -9,16 +10,22 @@ class Property(Base):
     __tablename__ = "properties"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)  # Name of the property
+    name = Column(String, nullable=False)
     address = Column(String, nullable=False)
 
-    # ✅ Unique property code generated automatically
     property_code = Column(
-        String, unique=True, nullable=False, index=True,
-        default=lambda: str(uuid.uuid4())[:8].upper()
+        String,
+        unique=True,
+        nullable=False,
+        index=True,
+        default=lambda: str(uuid.uuid4())[:8].upper(),
     )
 
-    landlord_id = Column(Integer, ForeignKey("landlords.id", ondelete="CASCADE"), nullable=False)
+    landlord_id = Column(
+        Integer,
+        ForeignKey("landlords.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     manager_id = Column(Integer, ForeignKey("property_managers.id"), nullable=True)
 
     landlord = relationship("Landlord", back_populates="properties")
@@ -36,23 +43,32 @@ class Unit(Base):
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=False)
     occupied = Column(Integer, default=0)  # 0 = vacant, 1 = occupied
 
-    # Relationships
     property = relationship("Property", back_populates="units")
-    lease = relationship("Lease", back_populates="unit", uselist=False)
+
+    # IMPORTANT:
+    # A unit can have many leases over time.
+    # Do not use uselist=False here.
+    leases = relationship(
+        "Lease",
+        back_populates="unit",
+        cascade="all, delete-orphan",
+        order_by="Lease.start_date.desc()",
+    )
+
     payments = relationship(
         "Payment",
         back_populates="unit",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
     service_charges = relationship(
         "ServiceCharge",
         back_populates="unit",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
     maintenance_requests = relationship(
         "MaintenanceRequest",
         back_populates="unit",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
 
@@ -64,17 +80,16 @@ class Lease(Base):
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
     start_date = Column(DateTime, default=datetime.utcnow)
     end_date = Column(DateTime, nullable=True)
-    rent_amount = Column(Numeric(10,2), nullable=False)
-    active = Column(Integer, default=1)   # 1 = active, 0 = inactive
+    rent_amount = Column(Numeric(10, 2), nullable=False)
+    active = Column(Integer, default=1)  # 1 = active, 0 = inactive
     terms_text = Column(String, nullable=True)
-    terms_accepted = Column(Integer, default=0)  # 0 = false, 1 = true
+    terms_accepted = Column(Integer, default=0)
     terms_accepted_at = Column(DateTime, nullable=True)
 
-    # Relationships
     tenant = relationship("Tenant", back_populates="leases")
-    unit = relationship("Unit", back_populates="lease")
+    unit = relationship("Unit", back_populates="leases")
     payments = relationship(
         "Payment",
         back_populates="lease",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )

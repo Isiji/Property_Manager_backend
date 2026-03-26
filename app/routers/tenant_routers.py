@@ -1,3 +1,4 @@
+# app/routers/tenant_routers.py
 from datetime import date
 from typing import List
 
@@ -108,6 +109,8 @@ def assign_existing(payload: AssignExistingTenant, db: Session = Depends(get_db)
         "lease_id": lease.id,
         "tenant_id": tenant.id,
         "unit_id": unit.id,
+        "property_id": unit.property_id,
         "start_date": lease.start_date.isoformat(),
         "rent_amount": str(lease.rent_amount) if lease.rent_amount is not None else None,
+        "message": "Existing tenant assigned successfully",
     }

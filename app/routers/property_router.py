@@ -288,7 +288,6 @@ def property_with_units_detailed(
     db: Session = Depends(get_db),
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ):
-    # optional: protect this endpoint
     payload = _decode(creds)
     role = payload.get("role")
     sub = _sub_int(payload)
@@ -297,17 +296,20 @@ def property_with_units_detailed(
     prop = (
         db.query(Property)
         .options(
-            joinedload(Property.units).joinedload(Unit.lease).joinedload(Lease.tenant),
+            joinedload(Property.units)
+            .joinedload(Unit.leases)   # ✅ FIX HERE
+            .joinedload(Lease.tenant),
             joinedload(Property.landlord),
         )
         .filter(Property.id == property_id)
         .first()
     )
+
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    # auth: admin can view; landlord only if owns; manager only if manages
-    if role == "admin" or "super_admin":
+    # 🔐 AUTH
+    if role == "admin" or role == "super_admin":
         pass
     elif role == "landlord":
         if int(prop.landlord_id or 0) != sub:
@@ -319,8 +321,8 @@ def property_with_units_detailed(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     landlord_obj = None
-    ll = getattr(prop, "landlord", None)
-    if ll:
+    if prop.landlord:
+        ll = prop.landlord
         landlord_obj = {
             "id": ll.id,
             "name": ll.name,
@@ -330,17 +332,27 @@ def property_with_units_detailed(
         }
 
     units_out = []
+
     for u in prop.units:
-        lease = u.lease
-        active = (lease is not None) and int(lease.active or 0) == 1
-        tenant = lease.tenant if active else None
+        # ✅ FIX: handle multiple leases
+        active_lease = next(
+            (l for l in u.leases if int(l.active or 0) == 1),
+            None
+        )
+
+        if not active_lease and u.leases:
+            # fallback: latest lease
+            active_lease = sorted(u.leases, key=lambda x: x.id, reverse=True)[0]
+
+        tenant = active_lease.tenant if active_lease else None
 
         units_out.append({
             "id": u.id,
             "number": u.number,
-            "rent_amount": str(u.rent_amount) if u.rent_amount is not None else None,
+            "rent_amount": str(u.rent_amount) if u.rent_amount else None,
             "property_id": u.property_id,
             "status": "occupied" if int(u.occupied or 0) == 1 else "vacant",
+
             "tenant": None if not tenant else {
                 "id": tenant.id,
                 "name": tenant.name,
@@ -348,12 +360,13 @@ def property_with_units_detailed(
                 "email": tenant.email,
                 "id_number": getattr(tenant, "id_number", None),
             },
-            "lease": None if not lease else {
-                "id": lease.id,
-                "start_date": lease.start_date.isoformat() if lease.start_date else None,
-                "end_date": lease.end_date.isoformat() if lease.end_date else None,
-                "rent_amount": float(lease.rent_amount or 0),
-                "active": int(lease.active or 0),
+
+            "lease": None if not active_lease else {
+                "id": active_lease.id,
+                "start_date": active_lease.start_date.isoformat() if active_lease.start_date else None,
+                "end_date": active_lease.end_date.isoformat() if active_lease.end_date else None,
+                "rent_amount": float(active_lease.rent_amount or 0),
+                "active": int(active_lease.active or 0),
             },
         })
 
@@ -370,7 +383,6 @@ def property_with_units_detailed(
         "vacant_units": sum(1 for x in prop.units if int(x.occupied or 0) == 0),
         "units": units_out,
     }
-
 
 # ---- Read: single (basic) -------------------------------------------------
 @router.get("/{property_id}")

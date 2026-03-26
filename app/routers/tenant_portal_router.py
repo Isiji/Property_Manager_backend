@@ -1,4 +1,4 @@
-# tenant_portal_router.py
+# app/routers/tenant_portal_router.py
 from __future__ import annotations
 
 import json
@@ -14,9 +14,6 @@ import jwt
 from app.database import get_db
 from app import models
 
-from app.services import notification_service
-from app.schemas.notification_schema import NotificationCreate
-
 try:
     from app.core.config import settings
     SECRET_KEY = settings.SECRET_KEY
@@ -26,6 +23,7 @@ except Exception:
     ALGORITHM = "HS256"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+router = APIRouter(prefix="/tenants/me", tags=["Tenant Portal"])
 
 
 def _decode_token(token: str) -> Dict[str, Any]:
@@ -57,9 +55,12 @@ def get_current_tenant(
     t = (
         db.query(models.Tenant)
         .options(
-            joinedload(models.Tenant.leases).joinedload(models.Lease.unit).joinedload(models.Unit.property),
+            joinedload(models.Tenant.leases)
+            .joinedload(models.Lease.unit)
+            .joinedload(models.Unit.property),
             joinedload(models.Tenant.payments),
-            joinedload(models.Tenant.maintenance_requests).joinedload(models.MaintenanceRequest.status),
+            joinedload(models.Tenant.maintenance_requests)
+            .joinedload(models.MaintenanceRequest.status),
         )
         .filter(models.Tenant.id == int(tenant_id))
         .first()
@@ -67,9 +68,6 @@ def get_current_tenant(
     if not t:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     return t
-
-
-router = APIRouter(prefix="/tenants/me", tags=["Tenant Portal"])
 
 
 def _yyyymm(dt: date | datetime) -> str:
@@ -87,10 +85,6 @@ def _add_months(period: str, count: int) -> str:
     y = month_index // 12
     m = (month_index % 12) + 1
     return f"{y}-{str(m).zfill(2)}"
-
-
-def _list_periods(start_period: str, months: int) -> List[str]:
-    return [_add_months(start_period, i) for i in range(months)]
 
 
 def _sum_allocated_for_period(db: Session, lease_id: int, period: str) -> float:
@@ -139,11 +133,11 @@ def _build_period_suggestions(db: Session, lease: models.Lease) -> Dict[str, Any
     p = start_period
     guard = 0
     while guard < 60:
-      periods.append(p)
-      if p == _add_months(current_period, 6):
-          break
-      p = _add_months(p, 1)
-      guard += 1
+        periods.append(p)
+        if p == _add_months(current_period, 6):
+            break
+        p = _add_months(p, 1)
+        guard += 1
 
     rows: List[Dict[str, Any]] = []
     unpaid_periods: List[str] = []
@@ -183,53 +177,71 @@ def _build_period_suggestions(db: Session, lease: models.Lease) -> Dict[str, Any
     }
 
 
-@router.get("/overview")
-def tenant_overview(
-    current: models.Tenant = Depends(get_current_tenant),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    active_lease: Optional[models.Lease] = None
-    for l in current.leases:
-        if int(l.active or 0) == 1:
-            active_lease = l
-            break
+def _serialize_rental(db: Session, lease: models.Lease) -> Dict[str, Any]:
+    unit = lease.unit
+    prop = unit.property if unit else None
 
-    unit_info: Dict[str, Any] = {}
-    lease_info: Dict[str, Any] = {}
-    this_month: Dict[str, Any] = {"expected": 0, "received": 0, "balance": 0, "paid": False}
-    planner: Dict[str, Any] = {"rows": [], "suggested_periods": [], "prompt": ""}
+    period = _yyyymm(date.today())
+    expected = float(lease.rent_amount or 0)
+    received = _sum_allocated_for_period(db, lease.id, period)
+    balance = round(expected - received, 2)
 
-    if active_lease:
-        unit = active_lease.unit
-        unit_info = {
+    return {
+        "lease_id": lease.id,
+        "active": int(lease.active or 0),
+        "start_date": lease.start_date.date().isoformat() if isinstance(lease.start_date, datetime) else (
+            lease.start_date.isoformat() if lease.start_date else None
+        ),
+        "end_date": lease.end_date.date().isoformat() if isinstance(lease.end_date, datetime) and lease.end_date else (
+            lease.end_date.isoformat() if lease.end_date else None
+        ),
+        "rent_amount": float(lease.rent_amount or 0),
+        "property": {
+            "id": prop.id if prop else None,
+            "name": getattr(prop, "name", None),
+            "address": getattr(prop, "address", None),
+            "property_code": getattr(prop, "property_code", None),
+        },
+        "unit": {
             "id": unit.id if unit else None,
             "number": getattr(unit, "number", None),
             "property_id": getattr(unit, "property_id", None),
-            "property_name": getattr(unit.property, "name", None) if unit and unit.property else None,
-        }
-        lease_info = {
-            "id": active_lease.id,
-            "rent_amount": float(active_lease.rent_amount) if active_lease.rent_amount is not None else None,
-            "start_date": active_lease.start_date.date().isoformat() if isinstance(active_lease.start_date, datetime) else active_lease.start_date.isoformat(),
-            "end_date": active_lease.end_date.date().isoformat() if isinstance(active_lease.end_date, datetime) and active_lease.end_date else (active_lease.end_date.isoformat() if active_lease.end_date else None),
-            "active": int(active_lease.active),
-        }
-
-        period = _yyyymm(date.today())
-        expected = float(active_lease.rent_amount or 0)
-        received = _sum_allocated_for_period(db, active_lease.id, period)
-        balance = round(expected - received, 2)
-
-        this_month = {
+        },
+        "this_month": {
             "period": period,
             "expected": expected,
             "received": received,
             "balance": balance if balance > 0 else 0,
             "paid": received >= expected and expected > 0,
             "status": _period_status(expected, received),
-        }
+        },
+        "planner": _build_period_suggestions(db, lease),
+    }
 
-        planner = _build_period_suggestions(db, active_lease)
+
+@router.get("/overview")
+def tenant_overview(
+    current: models.Tenant = Depends(get_current_tenant),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    leases_sorted = sorted(
+        current.leases or [],
+        key=lambda l: (
+            int(l.active or 0),
+            l.start_date or datetime.min,
+        ),
+        reverse=True,
+    )
+
+    active_leases = [l for l in leases_sorted if int(l.active or 0) == 1]
+    inactive_leases = [l for l in leases_sorted if int(l.active or 0) != 1]
+
+    rentals = [_serialize_rental(db, lease) for lease in active_leases]
+    history = [_serialize_rental(db, lease) for lease in inactive_leases[:10]]
+
+    total_expected = sum((r["this_month"]["expected"] or 0) for r in rentals)
+    total_received = sum((r["this_month"]["received"] or 0) for r in rentals)
+    total_balance = sum((r["this_month"]["balance"] or 0) for r in rentals)
 
     return {
         "tenant": {
@@ -239,11 +251,24 @@ def tenant_overview(
             "email": current.email,
             "id_number": getattr(current, "id_number", None),
         },
-        "unit": unit_info,
-        "lease": lease_info,
-        "this_month": this_month,
-        "planner": planner,
+        "summary": {
+            "active_rentals_count": len(rentals),
+            "this_month_expected": total_expected,
+            "this_month_received": total_received,
+            "this_month_balance": total_balance,
+        },
+        "rentals": rentals,
+        "history": history,
     }
+
+
+@router.get("/profile")
+def tenant_profile(
+    current: models.Tenant = Depends(get_current_tenant),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    overview = tenant_overview(current=current, db=db)
+    return overview
 
 
 @router.get("/payments")
@@ -262,23 +287,13 @@ def tenant_payments(
             joinedload(models.Payment.unit).joinedload(models.Unit.property),
             joinedload(models.Payment.lease),
         )
-        .filter(models.Payment.tenant_id == current.id)
+        .filter(
+            (models.Payment.tenant_id == current.id) |
+            (models.Payment.lease_id.in_(lease_ids))
+        )
         .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
         .all()
     )
-
-    if not rows:
-        rows = (
-            db.query(models.Payment)
-            .options(
-                joinedload(models.Payment.allocations),
-                joinedload(models.Payment.unit).joinedload(models.Unit.property),
-                joinedload(models.Payment.lease),
-            )
-            .filter(models.Payment.lease_id.in_(lease_ids))
-            .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
-            .all()
-        )
 
     out: List[Dict[str, Any]] = []
     for p in rows:
@@ -287,25 +302,21 @@ def tenant_payments(
             allocations.append({
                 "period": a.period,
                 "amount_applied": float(a.amount_applied or 0),
+                "lease_id": a.lease_id,
             })
 
         out.append({
             "id": p.id,
-            "lease_id": p.lease_id,
             "tenant_id": p.tenant_id,
+            "lease_id": p.lease_id,
             "unit_id": p.unit_id,
-            "period": p.period,
             "amount": float(p.amount or 0),
+            "reference": p.reference,
+            "status": p.status,
             "paid_date": p.paid_date.isoformat() if p.paid_date else None,
-            "reference": getattr(p, "reference", None),
-            "status": p.status.value if hasattr(p.status, "value") else str(p.status),
-            "payment_method": getattr(p, "payment_method", None),
-            "allocation_mode": getattr(p, "allocation_mode", None),
-            "selected_periods_json": getattr(p, "selected_periods_json", None),
-            "merchant_request_id": getattr(p, "merchant_request_id", None),
-            "checkout_request_id": getattr(p, "checkout_request_id", None),
-            "notes": _notes_to_dict(getattr(p, "notes", None)),
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "property_name": getattr(getattr(p.unit, "property", None), "name", None),
+            "unit_number": getattr(p.unit, "number", None),
             "allocations": allocations,
         })
     return out
@@ -318,202 +329,24 @@ def tenant_maintenance(
 ) -> List[Dict[str, Any]]:
     rows = (
         db.query(models.MaintenanceRequest)
+        .options(
+            joinedload(models.MaintenanceRequest.status),
+            joinedload(models.MaintenanceRequest.unit).joinedload(models.Unit.property),
+        )
         .filter(models.MaintenanceRequest.tenant_id == current.id)
-        .order_by(models.MaintenanceRequest.created_at.desc().nullslast())
+        .order_by(models.MaintenanceRequest.created_at.desc(), models.MaintenanceRequest.id.desc())
         .all()
     )
-    out = []
+
+    out: List[Dict[str, Any]] = []
     for m in rows:
         out.append({
             "id": m.id,
             "description": m.description,
-            "status": getattr(m.status, "name", None),
             "created_at": m.created_at.isoformat() if m.created_at else None,
-            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+            "status": getattr(getattr(m, "status", None), "name", None),
+            "unit_id": getattr(m, "unit_id", None),
+            "unit_number": getattr(getattr(m, "unit", None), "number", None),
+            "property_name": getattr(getattr(getattr(m, "unit", None), "property", None), "name", None),
         })
     return out
-
-
-@router.post("/maintenance", status_code=201)
-def create_maintenance(
-    payload: Dict[str, Any],
-    current: models.Tenant = Depends(get_current_tenant),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    description = (payload.get("description") or "").strip()
-    if not description:
-        raise HTTPException(status_code=400, detail="Description is required")
-
-    status_row = db.query(models.MaintenanceStatus).filter(models.MaintenanceStatus.name == "open").first()
-    if not status_row:
-        status_row = models.MaintenanceStatus(name="open")
-        db.add(status_row)
-        db.commit()
-        db.refresh(status_row)
-
-    unit_id = current.unit_id
-    if not unit_id:
-        active = next((l for l in current.leases if int(l.active or 0) == 1), None)
-        if active:
-            unit_id = active.unit_id
-    if not unit_id:
-        raise HTTPException(status_code=400, detail="No unit found for tenant")
-
-    req = models.MaintenanceRequest(
-        tenant_id=current.id,
-        unit_id=unit_id,
-        description=description,
-        status_id=status_row.id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
-    db.add(req)
-    db.commit()
-    db.refresh(req)
-
-    unit_row = (
-        db.query(models.Unit)
-        .options(joinedload(models.Unit.property))
-        .filter(models.Unit.id == unit_id)
-        .first()
-    )
-
-    unit_label = getattr(unit_row, "number", None) or f"Unit {unit_id}"
-    title = "New maintenance request"
-    message = f"{unit_label}: {description}"
-
-    property_row = getattr(unit_row, "property", None)
-
-    if property_row and getattr(property_row, "landlord_id", None):
-        notification_service.send_notification(
-            db,
-            NotificationCreate(
-                user_id=property_row.landlord_id,
-                user_type="landlord",
-                title=title,
-                message=message,
-                channel="inapp",
-            ),
-        )
-
-    if property_row and getattr(property_row, "manager_id", None):
-        notification_service.send_notification(
-            db,
-            NotificationCreate(
-                user_id=property_row.manager_id,
-                user_type="property_manager",
-                title=title,
-                message=message,
-                channel="inapp",
-            ),
-        )
-
-    return {
-        "id": req.id,
-        "description": req.description,
-        "status": getattr(req.status, "name", None),
-        "created_at": req.created_at.isoformat() if req.created_at else None,
-    }
-
-
-@router.get("/profile")
-def tenant_profile(current: models.Tenant = Depends(get_current_tenant)) -> Dict[str, Any]:
-    return {
-        "id": current.id,
-        "name": current.name,
-        "phone": current.phone,
-        "email": current.email,
-        "property_id": current.property_id,
-        "unit_id": current.unit_id,
-        "id_number": getattr(current, "id_number", None),
-    }
-
-
-@router.post("/pay")
-def pay_this_month(current: models.Tenant = Depends(get_current_tenant)) -> Dict[str, Any]:
-    return {"message": "Payment initiation stubbed. Integrate with your PSP here."}
-
-
-def _get_active_lease_for_tenant(db: Session, tenant_id: int) -> Optional[models.Lease]:
-    return (
-        db.query(models.Lease)
-        .options(
-            joinedload(models.Lease.unit).joinedload(models.Unit.property),
-        )
-        .filter(models.Lease.tenant_id == tenant_id)
-        .filter(models.Lease.active == 1)
-        .order_by(models.Lease.id.desc())
-        .first()
-    )
-
-
-@router.get("/overview")
-def tenant_overview(
-    current: models.Tenant = Depends(get_current_tenant),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    active_lease: Optional[models.Lease] = _get_active_lease_for_tenant(db, current.id)
-
-    unit_info: Dict[str, Any] = {}
-    lease_info: Dict[str, Any] = {}
-    this_month: Dict[str, Any] = {"expected": 0, "received": 0, "balance": 0, "paid": False}
-    planner: Dict[str, Any] = {"rows": [], "suggested_periods": [], "prompt": ""}
-
-    if active_lease:
-        unit = active_lease.unit
-
-        # Source of truth remains lease rent.
-        # If you want tenant dashboard to reflect unit rent instantly,
-        # change this line to use unit.rent_amount instead.
-        effective_rent = float(active_lease.rent_amount or 0)
-
-        unit_info = {
-            "id": unit.id if unit else None,
-            "number": getattr(unit, "number", None),
-            "property_id": getattr(unit, "property_id", None),
-            "property_name": getattr(unit.property, "name", None) if unit and unit.property else None,
-            "unit_rent_amount": float(getattr(unit, "rent_amount", 0) or 0) if unit else 0,
-        }
-
-        lease_info = {
-            "id": active_lease.id,
-            "rent_amount": effective_rent,
-            "start_date": active_lease.start_date.date().isoformat()
-            if isinstance(active_lease.start_date, datetime)
-            else active_lease.start_date.isoformat(),
-            "end_date": active_lease.end_date.date().isoformat()
-            if isinstance(active_lease.end_date, datetime) and active_lease.end_date
-            else (active_lease.end_date.isoformat() if active_lease.end_date else None),
-            "active": int(active_lease.active),
-        }
-
-        period = _yyyymm(date.today())
-        expected = effective_rent
-        received = _sum_allocated_for_period(db, active_lease.id, period)
-        balance = round(expected - received, 2)
-
-        this_month = {
-            "period": period,
-            "expected": expected,
-            "received": received,
-            "balance": balance if balance > 0 else 0,
-            "paid": received >= expected and expected > 0,
-            "status": _period_status(expected, received),
-        }
-
-        # Make planner also use the same active lease
-        planner = _build_period_suggestions(db, active_lease)
-
-    return {
-        "tenant": {
-            "id": current.id,
-            "name": current.name,
-            "phone": current.phone,
-            "email": current.email,
-            "id_number": getattr(current, "id_number", None),
-        },
-        "unit": unit_info,
-        "lease": lease_info,
-        "this_month": this_month,
-        "planner": planner,
-    }

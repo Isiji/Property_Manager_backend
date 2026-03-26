@@ -1,43 +1,45 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
-from datetime import date, datetime
+# app/schemas/lease_schema.py
+from __future__ import annotations
 
-class LeaseBase(BaseModel):
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class LeaseCreate(BaseModel):
     tenant_id: int
     unit_id: int
-    # Use date (not datetime) to avoid "date_from_datetime_inexact"
-    start_date: date=Field(default_factory=date.today)
-    end_date: Optional[date] = None
-    # rent could be null for legacy rows; keep it optional in API
-    rent_amount: Optional[float] = None
-    # Optional in payload; defaults to 1 in CRUD
+    start_date: datetime
+    end_date: Optional[datetime] = None
+    rent_amount: float = Field(..., gt=0)
     active: Optional[int] = 1
+    terms_text: Optional[str] = None
+    terms_accepted: Optional[int] = 0
+    terms_accepted_at: Optional[datetime] = None
 
-    @field_validator("start_date", "end_date", mode="before")
-    def parse_dates(cls, v):
-        if isinstance(v, datetime):
-            return v.date()
-        if isinstance(v, str) and "T" in v:
-            return datetime.fromisoformat(v).date()
-        return v
-
-class LeaseCreate(LeaseBase):
-    pass
 
 class LeaseUpdate(BaseModel):
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-    rent_amount: Optional[float] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    rent_amount: Optional[float] = Field(default=None, gt=0)
     active: Optional[int] = None
+    terms_text: Optional[str] = None
+    terms_accepted: Optional[int] = None
+    terms_accepted_at: Optional[datetime] = None
+
 
 class LeaseOut(BaseModel):
     id: int
     tenant_id: int
     unit_id: int
-    start_date: date
-    end_date: Optional[date] = None
-    rent_amount: Optional[float] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    rent_amount: float
     active: int
+    terms_text: Optional[str] = None
+    terms_accepted: int
+    terms_accepted_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
