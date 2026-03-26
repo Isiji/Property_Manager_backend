@@ -1,4 +1,3 @@
-# payment_router.py
 from __future__ import annotations
 
 import json
@@ -6,13 +5,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
 from app.dependencies import get_db, get_current_user
 from app.services.daraja_service import daraja_client
-from app.services.payment_handler import handle_payment_success
+from app.services.payment_event_service import handle_payment_success
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -182,7 +181,6 @@ def allocate_payment(
     lease: models.Lease,
     periods: List[str],
 ):
-    # Prevent duplicate allocations on callback retries
     existing_allocs = (
         db.query(models.PaymentAllocation)
         .filter(models.PaymentAllocation.payment_id == payment.id)
@@ -219,7 +217,6 @@ def allocate_payment(
         created.append(alloc)
         remaining -= apply_amt
 
-    # If extra money remains, put forward credit on last selected period
     if remaining > 0 and periods:
         alloc = models.PaymentAllocation(
             payment_id=payment.id,

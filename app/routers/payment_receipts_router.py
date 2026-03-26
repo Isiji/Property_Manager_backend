@@ -18,6 +18,11 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
+# IMPORTANT:
+# use the same success handler everywhere so receipt generation
+# and notifications stay consistent
+from app.services.payment_event_service import handle_payment_success
+
 router = APIRouter(prefix="/payments", tags=["Payments: Receipts"])
 
 
@@ -56,7 +61,6 @@ def _receipt_number(payment: models.Payment, receipt: Optional[models.PaymentRec
 def _get_allocations(db: Session, payment: models.Payment, receipt: Optional[models.PaymentReceipt] = None) -> list[dict]:
     allocations: list[dict] = []
 
-    # 1. Prefer actual PaymentAllocation rows
     payment_allocations = getattr(payment, "allocations", None)
     if payment_allocations:
         for a in payment_allocations:
@@ -67,7 +71,6 @@ def _get_allocations(db: Session, payment: models.Payment, receipt: Optional[mod
         if allocations:
             return allocations
 
-    # 2. Fallback to receipt.allocations_json
     if receipt and getattr(receipt, "allocations_json", None):
         try:
             raw = json.loads(receipt.allocations_json)
@@ -86,7 +89,6 @@ def _get_allocations(db: Session, payment: models.Payment, receipt: Optional[mod
     if allocations:
         return allocations
 
-    # 3. Legacy fallback to single period from Payment / Receipt
     legacy_period = (
         getattr(payment, "period", None)
         or (getattr(receipt, "period", None) if receipt else None)
@@ -108,13 +110,11 @@ def _ensure_receipt(db: Session, payment: models.Payment) -> Optional[models.Pay
     if receipt:
         return receipt
 
-    # Auto-create receipt only for paid payments
     status_value = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
     if status_value != "paid":
         return None
 
     try:
-        from app.services.payment_handler import handle_payment_success
         receipt = handle_payment_success(db, payment)
         return receipt
     except Exception:
@@ -151,7 +151,6 @@ def _build_pdf_bytes(
             pass
 
     issued_date_str, issued_time_str = _fmt_datetime(getattr(receipt, "issued_at", None) if receipt else None)
-
     receipt_no = _receipt_number(payment, receipt)
 
     tenant_name = getattr(tenant, "name", None) or "-"
@@ -196,7 +195,6 @@ def _build_pdf_bytes(
         c.setFont("Helvetica", 10)
         c.drawString(x + label_width, y, value)
 
-    # Header
     c.setFont("Helvetica-Bold", 18)
     c.drawString(x_left, y, "PropSmart PMS")
     c.setFont("Helvetica-Bold", 14)
@@ -207,7 +205,6 @@ def _build_pdf_bytes(
     c.line(x_left, y, x_right, y)
     line_gap(8)
 
-    # Receipt summary
     c.setFont("Helvetica-Bold", 11)
     c.drawString(x_left, y, "Receipt Summary")
     line_gap(7)
@@ -231,7 +228,6 @@ def _build_pdf_bytes(
     draw_label_value("Issued At:", f"{issued_date_str} {issued_time_str}")
     line_gap(10)
 
-    # Property and parties
     c.setFont("Helvetica-Bold", 11)
     c.drawString(x_left, y, "Property / Parties")
     line_gap(7)
@@ -259,7 +255,6 @@ def _build_pdf_bytes(
     draw_label_value("Manager/Agency:", manager_name)
     line_gap(10)
 
-    # Total
     c.setFont("Helvetica-Bold", 11)
     c.drawString(x_left, y, "Payment Total")
     line_gap(7)
@@ -268,7 +263,6 @@ def _build_pdf_bytes(
     c.drawString(x_left, y, f"Amount Received: {_fmt_money(amount)}")
     line_gap(10)
 
-    # Allocations
     c.setFont("Helvetica-Bold", 11)
     c.drawString(x_left, y, "Allocation Breakdown")
     line_gap(8)
@@ -312,7 +306,6 @@ def _build_pdf_bytes(
     c.drawRightString(x_right, y, f"Allocated Total: {_fmt_money(total_allocated)}")
     line_gap(12)
 
-    # Footer
     c.setStrokeColor(colors.lightgrey)
     c.line(x_left, 25 * mm, x_right, 25 * mm)
     c.setFont("Helvetica", 9)
@@ -351,6 +344,75 @@ def _authz_ok(
         return True
 
     return False
+
+
+@router.get("/receipt/{payment_id}")
+def payment_receipt_json(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    current: dict = Depends(get_current_user),
+):
+    payment: Optional[models.Payment] = (
+        db.query(models.Payment)
+        .filter(models.Payment.id == payment_id)
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    receipt = _ensure_receipt(db, payment)
+
+    tenant = db.query(models.Tenant).filter(models.Tenant.id == payment.tenant_id).first()
+    unit = db.query(models.Unit).filter(models.Unit.id == payment.unit_id).first()
+    lease = (
+        db.query(models.Lease)
+        .filter(models.Lease.id == payment.lease_id)
+        .first()
+        if payment.lease_id
+        else None
+    )
+    property_ = (
+        db.query(models.Property)
+        .filter(models.Property.id == (unit.property_id if unit else 0))
+        .first()
+    )
+    landlord = (
+        db.query(models.Landlord)
+        .filter(models.Landlord.id == (property_.landlord_id if property_ else 0))
+        .first()
+        if property_
+        else None
+    )
+
+    if not _authz_ok(current, tenant, property_, landlord):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    allocations = _get_allocations(db, payment, receipt)
+
+    return {
+        "payment_id": payment.id,
+        "receipt_id": getattr(receipt, "id", None),
+        "receipt_number": _receipt_number(payment, receipt),
+        "reference": getattr(payment, "reference", None),
+        "payment_method": getattr(payment, "payment_method", None),
+        "amount": float(_safe_decimal(getattr(payment, "amount", 0))),
+        "paid_date": (
+            payment.paid_date.isoformat()
+            if getattr(payment, "paid_date", None)
+            else None
+        ),
+        "tenant_name": getattr(tenant, "name", None),
+        "property_name": getattr(property_, "name", None),
+        "property_code": getattr(property_, "property_code", None),
+        "unit_number": getattr(unit, "number", None),
+        "allocations": [
+            {
+                "period": row["period"],
+                "amount_applied": float(_safe_decimal(row["amount_applied"])),
+            }
+            for row in allocations
+        ],
+    }
 
 
 @router.get("/receipt/{payment_id}/pdf")
@@ -418,7 +480,6 @@ def payment_receipt_pdf(
     if not _authz_ok(current, tenant, property_, landlord):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # 1. Prefer saved PDF if it exists
     if receipt and getattr(receipt, "pdf_path", None):
         pdf_path = receipt.pdf_path
         if pdf_path and os.path.exists(pdf_path):
@@ -435,7 +496,6 @@ def payment_receipt_pdf(
             except Exception:
                 pass
 
-    # 2. Fallback: generate live PDF from DB
     allocations = _get_allocations(db, payment, receipt)
     pdf = _build_pdf_bytes(
         payment=payment,
